@@ -19,6 +19,25 @@ export async function fetchReflections(history: ChatMessage[]): Promise<Presumpt
   }
 }
 
+export async function fetchChipQuestions(
+  cardContent: string,
+  terms: string[],
+): Promise<Record<string, string>> {
+  if (!terms.length) return {};
+  try {
+    const res = await fetch('/api/chip-questions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cardContent, terms }),
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as { questions?: Record<string, string> };
+    return data.questions ?? {};
+  } catch {
+    return {};
+  }
+}
+
 export async function fetchMist(input: string, history: ChatMessage[]): Promise<MistCandidate[]> {
   try {
     const res = await fetch('/api/mist', {

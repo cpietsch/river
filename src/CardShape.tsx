@@ -174,8 +174,11 @@ function CardBody({ shape }: { shape: CardShape }) {
         }}
       >
         {content
-          ? renderWithBranchChips(content, (term) =>
-              actions?.branchAbout(shape.id, term),
+          ? renderWithBranchChips(
+              content,
+              (shape.meta as { chipQuestions?: Record<string, string> })
+                ?.chipQuestions,
+              (prompt) => actions?.branchAbout(shape.id, prompt),
             )
           : 'thinking…'}
         {streaming && <span className="river-cursor">▊</span>}
@@ -342,7 +345,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
           data-testid="river-input"
           value={input}
           disabled={busy}
-          placeholder={busy ? 'thinking…' : 'or type your own…'}
+          placeholder={busy ? 'thinking…' : 'ask the river…'}
           onChange={(e) => onInputChange(e.currentTarget.value)}
           onPointerDown={(e) => e.stopPropagation()}
           onKeyDown={(e) => {
@@ -413,13 +416,17 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 
 /**
  * Parse `[[term]]` markers inside assistant text and render each as a tappable
- * branch chip. Incomplete markers (e.g. "[[my" while still streaming) stay as
- * plain text until the closing `]]` arrives, at which point they snap into a
- * chip on the next render.
+ * branch chip. After the main stream completes, App fetches a contextual
+ * question for each term via Haiku and stores the map in the card's meta as
+ * `chipQuestions`. The chip's click handler uses the question if available,
+ * else falls back to the bare term (which still works because the main model
+ * has the full conversation history). Incomplete markers mid-stream stay as
+ * plain text until the closing `]]` arrives.
  */
 function renderWithBranchChips(
   text: string,
-  onChipClick: (term: string) => void,
+  chipQuestions: Record<string, string> | undefined,
+  onChipClick: (prompt: string) => void,
 ): React.ReactNode {
   const parts: React.ReactNode[] = [];
   const regex = /\[\[([^\[\]]+?)\]\]/g;
@@ -431,8 +438,13 @@ function renderWithBranchChips(
       parts.push(text.slice(lastIdx, match.index));
     }
     const term = match[1].trim();
+    const prompt = chipQuestions?.[term] || term;
     parts.push(
-      <BranchChip key={`chip-${chipKey++}`} term={term} onClick={() => onChipClick(term)} />,
+      <BranchChip
+        key={`chip-${chipKey++}`}
+        term={term}
+        onClick={() => onChipClick(prompt)}
+      />,
     );
     lastIdx = match.index + match[0].length;
   }

@@ -36,6 +36,8 @@ LENGTH: 2-5 sentences, 40-100 words. Thorough but distilled. Plain prose — no 
 
 INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas in double brackets like [[this]]. Choose terms the reader might want to explore as its own branch. Keep each bracketed phrase short (1-4 words) and never nest brackets. The brackets render as tappable chips that spawn a new tributary in the canvas.`;
 
+const CHIP_QUESTIONS_SYSTEM = `You write the contextual question a reader would ask to dig deeper into each highlighted term in a card. The card's prose is given; the highlighted terms are listed. For each term, return one full-sentence question — anchored in the card's specific framing, not a generic "what is X" or "tell me more". Output ONLY a JSON object mapping term → question. No prose, no markdown fence. Example: {"NanoKVM": "how does NanoKVM differ from the Base in build quality and port layout?", "BMC chip": "why does the BMC chip choice dominate KVM-over-IP latency?"}`;
+
 const REFLECT_SYSTEM = `You are the reflection layer — a quiet observer that reads the conversation and surfaces exactly 3 hidden assumptions the conversation is taking for granted without examining them.
 
 These are NOT follow-up questions. They are quiet things the conversation treats as obvious — cultural defaults, missing viewpoints, unstated values.
@@ -187,6 +189,54 @@ app.post('/api/reflect', async (req, res) => {
   } catch (err) {
     console.error('reflect failed:', err?.message);
     res.json({ presumptions: [] });
+  }
+});
+
+app.post('/api/chip-questions', async (req, res) => {
+  const { cardContent = '', terms = [] } = req.body ?? {};
+  const cleanTerms = Array.isArray(terms)
+    ? terms.filter((t) => typeof t === 'string' && t.trim()).slice(0, 8)
+    : [];
+  if (!cardContent.trim() || cleanTerms.length === 0) {
+    res.json({ questions: {} });
+    return;
+  }
+  try {
+    const response = await anthropic.messages.create({
+      model: MIST_MODEL,
+      max_tokens: 600,
+      system: CHIP_QUESTIONS_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Card prose:\n"""${cardContent}"""\n\nHighlighted terms: ${JSON.stringify(cleanTerms)}\n\nReturn the JSON object mapping each term to its contextual question.`,
+        },
+      ],
+    });
+    const raw = response.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('');
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) {
+      res.json({ questions: {} });
+      return;
+    }
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    if (!parsed || typeof parsed !== 'object') {
+      res.json({ questions: {} });
+      return;
+    }
+    // Filter to known terms + string values
+    const questions = {};
+    for (const t of cleanTerms) {
+      const v = parsed[t];
+      if (typeof v === 'string' && v.trim()) questions[t] = v.trim();
+    }
+    res.json({ questions });
+  } catch (err) {
+    console.error('chip-questions failed:', err?.message);
+    res.json({ questions: {} });
   }
 });
 

@@ -18,6 +18,7 @@ import {
 const ACTIVE_CARD_HEIGHT = 170;
 import { CardActionsContext } from './CardActions';
 import {
+  fetchChipQuestions,
   fetchReflections,
   streamGenerate,
   type ChatMessage,
@@ -59,6 +60,21 @@ export function App() {
   useEffect(() => {
     reflectionsVisibleRef.current = reflectionsVisible;
   }, [reflectionsVisible]);
+
+  // Precache toggle: when on, after each assistant card completes we fire
+  // background main-model calls for every chip's contextual question and every
+  // presumption's promotion prompt. The full responses are stashed in
+  // precacheRef keyed by `${parentId}::${prompt}`. Branch clicks then hit the
+  // cache and render the assistant content instantly instead of streaming.
+  const [precacheEnabled, setPrecacheEnabled] = useState(false);
+  const precacheEnabledRef = useRef(false);
+  useEffect(() => {
+    precacheEnabledRef.current = precacheEnabled;
+  }, [precacheEnabled]);
+  const precacheRef = useRef<Map<string, string>>(new Map());
+  const precacheInFlightRef = useRef<Set<string>>(new Set());
+  const precacheKey = (parentId: TLShapeId | string, prompt: string) =>
+    `${parentId}::${prompt}`;
 
   const handleMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
@@ -185,6 +201,56 @@ export function App() {
       }));
   }, []);
 
+  // Walk one step up the arrow graph to find a card's parent (the card on the
+  // 'start' end of the arrow whose 'end' terminal binds to this card).
+  const getParentId = useCallback(
+    (childId: TLShapeId): TLShapeId | null => {
+      const editor = editorRef.current;
+      if (!editor) return null;
+      const incoming = editor
+        .getBindingsToShape(childId, 'arrow')
+        .filter((b) => b.props.terminal === 'end') as { fromId: TLShapeId }[];
+      if (incoming.length === 0) return null;
+      const arrowId = incoming[0].fromId;
+      const startBinding = editor
+        .getBindingsFromShape(arrowId, 'arrow')
+        .find((b) => b.props.terminal === 'start') as
+        | { toId: TLShapeId }
+        | undefined;
+      return startBinding?.toId ?? null;
+    },
+    [],
+  );
+
+  // Background-fetch the assistant response for a hypothetical branch, keyed
+  // by `${parentId}::${prompt}`. Used by the precache toggle to make pill /
+  // presumption clicks render instantly. Skips already-cached entries.
+  const warmCache = useCallback(
+    (parentAssistantId: TLShapeId, prompts: string[]) => {
+      if (prompts.length === 0) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      const history = historyFor(parentAssistantId);
+      const emphasized = gatherEmphasized(editor);
+      for (const prompt of prompts) {
+        const key = precacheKey(parentAssistantId, prompt);
+        if (precacheRef.current.has(key) || precacheInFlightRef.current.has(key))
+          continue;
+        precacheInFlightRef.current.add(key);
+        let buffer = '';
+        streamGenerate(prompt, history, (d) => { buffer += d; }, undefined, emphasized)
+          .then(() => {
+            precacheRef.current.set(key, buffer);
+          })
+          .catch(() => {})
+          .finally(() => {
+            precacheInFlightRef.current.delete(key);
+          });
+      }
+    },
+    [historyFor],
+  );
+
   // Sync reflection-arrow opacity to the X-ray toggle. Arrows have their own
   // opacity property — the card's opacity doesn't cascade. Because the
   // arrows are isLocked to prevent user drag, we unlock → update → relock;
@@ -260,26 +326,42 @@ export function App() {
         // Collect all emphasized card contents in the conversation — these get
         // injected as priority constraints into the system prompt.
         const emphasized = gatherEmphasized(editor);
+        // Cache lookup: pill clicks and reflection promotions may have been
+        // pre-warmed with the precache toggle on. Cache key uses the parent
+        // (the assistant the branch springs from) + the prompt, which uniquely
+        // determines the would-be response.
+        const branchParentId = getParentId(userCardId);
+        const cacheK = branchParentId ? precacheKey(branchParentId, text) : null;
+        const cached = cacheK ? precacheRef.current.get(cacheK) : undefined;
         let buffer = '';
-        await streamGenerate(
-          text,
-          history.slice(0, -1),
-          (delta) => {
-            buffer += delta;
-            editor.updateShape({
-              id: assistantId,
-              type: 'card',
-              props: { content: buffer, streaming: true },
-            });
-          },
-          undefined,
-          emphasized,
-        );
-        editor.updateShape({
-          id: assistantId,
-          type: 'card',
-          props: { content: buffer, streaming: false },
-        });
+        if (cached !== undefined) {
+          buffer = cached;
+          editor.updateShape({
+            id: assistantId,
+            type: 'card',
+            props: { content: buffer, streaming: false },
+          });
+        } else {
+          await streamGenerate(
+            text,
+            history.slice(0, -1),
+            (delta) => {
+              buffer += delta;
+              editor.updateShape({
+                id: assistantId,
+                type: 'card',
+                props: { content: buffer, streaming: true },
+              });
+            },
+            undefined,
+            emphasized,
+          );
+          editor.updateShape({
+            id: assistantId,
+            type: 'card',
+            props: { content: buffer, streaming: false },
+          });
+        }
 
         const assistant = editor.getShape(assistantId) as unknown as CardShape;
         if (isFromActive) {
@@ -319,6 +401,37 @@ export function App() {
           );
         }
 
+        // Fetch contextual questions for each [[term]] chip in the response.
+        // The model emits bare [[X]] reliably (the wiki-link prior in Sonnet
+        // resists any combined-syntax attempt); a quick Haiku call generates
+        // anchored questions for them, which the chip click handler reads
+        // from card meta.
+        const chipTerms = Array.from(
+          new Set(
+            [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
+              m[1].trim(),
+            ),
+          ),
+        );
+        if (chipTerms.length > 0) {
+          fetchChipQuestions(buffer, chipTerms)
+            .then((questions) => {
+              const a = editor.getShape(assistantId) as unknown as
+                | CardShape
+                | undefined;
+              if (!a) return;
+              editor.updateShape({
+                id: assistantId,
+                type: 'card',
+                meta: { ...(a.meta ?? {}), chipQuestions: questions },
+              });
+              if (precacheEnabledRef.current) {
+                warmCache(assistantId, Object.values(questions));
+              }
+            })
+            .catch(() => {});
+        }
+
         // Spawn the reflection layer: presumption cards that surface the
         // implicit frame of this exchange, placed alongside the just-finished
         // assistant card in a parallel column, each tied by a dashed arrow.
@@ -332,6 +445,15 @@ export function App() {
               reflectionsVisibleRef.current,
             );
             relayoutAll(editor);
+            if (precacheEnabledRef.current) {
+              // promoteReflection sends the label lower-cased-first as the
+              // prompt; mirror that exactly so the cache key matches at click.
+              const promotionPrompts = presumptions.map((p) => {
+                const label = p.label.trim();
+                return label.charAt(0).toLowerCase() + label.slice(1);
+              });
+              warmCache(assistantId, promotionPrompts);
+            }
           })
           .catch(() => {});
       } catch (err) {
@@ -345,7 +467,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [busy, activeId, historyFor],
+    [busy, activeId, historyFor, getParentId, warmCache],
   );
 
   const handleSubmit = useCallback(
@@ -402,10 +524,12 @@ export function App() {
   );
 
   const branchAbout = useCallback(
-    (sourceId: TLShapeId, term: string) => {
+    (sourceId: TLShapeId, prompt: string) => {
+      // The chip already carries the contextual question (the model emitted
+      // `[[term|question]]` in the same response). No second round-trip.
       const newId = createBranchUserCard(sourceId);
       if (!newId) return;
-      void runTurnFrom(newId, `Tell me more about ${term}.`);
+      void runTurnFrom(newId, prompt);
     },
     [createBranchUserCard, runTurnFrom],
   );
@@ -491,6 +615,10 @@ export function App() {
   const startNew = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
+    // Cache is per-conversation: chip prompts and presumption prompts collide
+    // by string across conversations and would serve stale responses.
+    precacheRef.current.clear();
+    precacheInFlightRef.current.clear();
     const all = editor.getCurrentPageShapes().map((s) => s.id);
     if (all.length > 0) editor.deleteShapes(all);
     const id = createShapeId();
@@ -539,6 +667,16 @@ export function App() {
     if (!current) return;
     if (Math.abs(current.props.h - h) >= 1) {
       editor.updateShape({ id, type: 'card', props: { h } });
+    }
+    if (current.props.layer === 'reflection') {
+      // Reflection cards shrink to their short labels after measurement; they
+      // were initially placed assuming CARD_HEIGHT_MIN, leaving big gaps.
+      // Re-stack the whole sidebar against actual measured heights.
+      const sourceId = (
+        current.meta as { reflectionSource?: TLShapeId } | undefined
+      )?.reflectionSource;
+      if (sourceId) restackReflections(editor, sourceId);
+      return;
     }
     // After any resize, re-flow downstream cards so the vertical gap between
     // parent-bottom and child-top stays constant. This keeps the elbow arrows
@@ -663,6 +801,43 @@ export function App() {
             <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" fill={reflectionsVisible ? 'currentColor' : 'none'} />
           </svg>
           {reflectionsVisible ? 'reflection on' : 'reflection off'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setPrecacheEnabled((v) => !v)}
+          aria-label="Toggle pre-caching of branch responses"
+          data-testid="toggle-precache"
+          title="When on, every chip and presumption is pre-fetched in the background so clicks render instantly. Costs extra API calls."
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '10px 14px',
+            background: precacheEnabled ? '#1f6f4a' : '#fff',
+            color: precacheEnabled ? '#fff' : '#1f6f4a',
+            border: '1px solid #1f6f4a',
+            borderRadius: 999,
+            font: 'inherit',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 3px 10px rgba(0,0,0,0.1)',
+            WebkitTapHighlightColor: 'transparent',
+            minHeight: 40,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill={precacheEnabled ? 'currentColor' : 'none'}
+            />
+          </svg>
+          {precacheEnabled ? 'precache on' : 'precache off'}
         </button>
       </div>
 
@@ -864,6 +1039,9 @@ function RiverCtxMenu({
 const CARD_GAP_Y = 40;
 const CARD_GAP_X = 80;
 const COLUMN_WIDTH = CARD_WIDTH + CARD_GAP_X;
+// Reflections stack as a tight sidebar — they're alternate angles on the same
+// turn, so visually they should read as a list, not a separate conversation.
+const REFLECTION_GAP_Y = 10;
 
 /**
  * Tidy-tree layout. Anchors on the current root's (x, y) and recomputes every
@@ -974,6 +1152,41 @@ function repositionChain(editor: Editor, sourceId: TLShapeId): void {
 }
 
 /**
+ * Re-stack all reflection-layer cards belonging to a given assistant source
+ * so each presumption sits flush against the previous one's measured bottom.
+ * Called after a presumption card's height settles via `resizeCard` —
+ * presumptions are spawned at CARD_HEIGHT_MIN-stride and shrink afterwards,
+ * leaving big gaps unless we re-pack them.
+ */
+function restackReflections(
+  editor: Editor,
+  sourceAssistantId: TLShapeId,
+): void {
+  const source = editor.getShape(sourceAssistantId) as unknown as
+    | CardShape
+    | undefined;
+  if (!source) return;
+  const cards = editor
+    .getCurrentPageShapes()
+    .filter((s): s is CardShape => s.type === 'card')
+    .map((s) => s as unknown as CardShape)
+    .filter(
+      (c) =>
+        c.props.layer === 'reflection' &&
+        (c.meta as { reflectionSource?: TLShapeId } | undefined)
+          ?.reflectionSource === sourceAssistantId,
+    )
+    .sort((a, b) => a.y - b.y);
+  let y = source.y;
+  for (const c of cards) {
+    if (Math.abs(c.y - y) >= 1) {
+      editor.updateShape({ id: c.id, type: 'card', y });
+    }
+    y += c.props.h + REFLECTION_GAP_Y;
+  }
+}
+
+/**
  * Collect the content of every emphasized (emphasis >= 2) card. These strings
  * are injected as priority constraints at the top of the LLM system prompt,
  * so visual weight on the canvas becomes semantic weight in the model.
@@ -1032,7 +1245,8 @@ function spawnPresumptions(
     .map((s) => s as unknown as CardShape)
     .filter((c) => c.props.layer === 'action');
   const minY = source.y;
-  const maxY = source.y + presumptions.length * (CARD_HEIGHT_MIN + CARD_GAP_Y);
+  const maxY =
+    source.y + presumptions.length * (CARD_HEIGHT_MIN + REFLECTION_GAP_Y);
   let reflectX = source.x + CARD_WIDTH + CARD_GAP_X;
   const isOccupied = (x: number) =>
     actionCards.some(
@@ -1070,7 +1284,7 @@ function spawnPresumptions(
     connectReflection(editor, sourceAssistantId, id, visible);
     // Advance by the actual measured-then-settled height (rough estimate
     // here; repositionChain would fix it if presumptions had children).
-    y += CARD_HEIGHT_MIN + CARD_GAP_Y;
+    y += CARD_HEIGHT_MIN + REFLECTION_GAP_Y;
   }
 }
 

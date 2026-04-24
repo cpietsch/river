@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#f7f6f2" />
+  <title>river — v2</title>
+  <style>
+    html, body, #root {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #f7f6f2;
+      overflow: hidden;
+      /* Prevent pull-to-refresh and bounce scrolling on mobile */
+      overscroll-behavior: none;
+    }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #111;
+      /* iOS: remove tap highlight + disable text size auto-adjust */
+      -webkit-tap-highlight-color: transparent;
+      -webkit-text-size-adjust: 100%;
+    }
+    /* Hide tldraw watermark in the prototype — this is a dev-only prototype, not a production deploy. */
+    .tl-watermark_SEE-LICENSE { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

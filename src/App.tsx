@@ -53,6 +53,12 @@ export function App() {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [reflectionsVisible, setReflectionsVisible] = useState(true);
+  // Mirror state in a ref so async spawners (fired from .then) read the
+  // current toggle without needing to re-create callbacks on each change.
+  const reflectionsVisibleRef = useRef(true);
+  useEffect(() => {
+    reflectionsVisibleRef.current = reflectionsVisible;
+  }, [reflectionsVisible]);
 
   const handleMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
@@ -65,18 +71,25 @@ export function App() {
     // this override, reduced-motion users see them snap instantly.
     editor.user.updateUserPreferences({ animationSpeed: 1 });
 
-    // Lock to select tool — the user never creates tldraw-native shapes
-    // directly. Any stray tool activation (keyboard shortcut, touch) would
-    // let them scribble text/draw-strokes onto the canvas.
-    editor.setCurrentTool('select');
+    // Lock to hand tool — drag anywhere pans the camera. The select tool's
+    // marquee box is wrong for a chat canvas, and the hand tool naturally
+    // makes cards unmovable since it only pans, never translates shapes.
+    // Card buttons/chips still receive pointer events (they stopPropagation
+    // before tldraw sees them).
+    editor.setCurrentTool('hand');
     editor.store.listen(
       () => {
-        if (editor.getCurrentToolId() !== 'select') {
-          editor.setCurrentTool('select');
+        if (editor.getCurrentToolId() !== 'hand') {
+          editor.setCurrentTool('hand');
         }
       },
       { source: 'user', scope: 'session' },
     );
+
+    // On every mount, re-sync reflection arrows to the current toggle state —
+    // the effect alone runs before editorRef is populated and would no-op,
+    // leaving arrows at whatever opacity was persisted last session.
+    syncReflectionArrows(editor, reflectionsVisibleRef.current);
 
     // Sweep orphaned arrows from prior sessions: any arrow whose bindings no
     // longer reach an existing shape. Accumulates across hot-reloads and crash
@@ -172,6 +185,14 @@ export function App() {
       }));
   }, []);
 
+  // Sync reflection-arrow opacity to the X-ray toggle. Arrows have their own
+  // opacity property — the card's opacity doesn't cascade. Because the
+  // arrows are isLocked to prevent user drag, we unlock → update → relock;
+  // locked tldraw shapes silently reject updateShape calls.
+  useEffect(() => {
+    syncReflectionArrows(editorRef.current, reflectionsVisible);
+  }, [reflectionsVisible]);
+
   // Mobile: track the visual viewport so the input bar stays above the
   // software keyboard instead of being hidden behind it.
   useEffect(() => {
@@ -195,8 +216,16 @@ export function App() {
       const editor = editorRef.current;
       if (!editor || busy) return;
 
+      // Only the main-flow active card should shift input state and activeId
+      // when its turn finishes. Side-flows (pill branches, reflection
+      // promotion) run their own thread and must leave the user's main input
+      // alone — otherwise the original empty user card loses active status
+      // and the non-active CardBody renders its empty-content fallback
+      // ('thinking…') permanently.
+      const isFromActive = userCardId === activeId;
+
       setBusy(true);
-      setInput('');
+      if (isFromActive) setInput('');
 
       // Commit user text. Works for empty-active cards and for freshly-created
       // branch cards alike.
@@ -253,36 +282,42 @@ export function App() {
         });
 
         const assistant = editor.getShape(assistantId) as unknown as CardShape;
-        const nextId = createShapeId();
-        const nextY = assistant.y + assistant.props.h + CARD_GAP_Y;
-        editor.createShape({
-          id: nextId,
-          type: 'card',
-          x: assistant.x,
-          y: nextY,
-              props: {
-            w: CARD_WIDTH,
-            h: CARD_HEIGHT_MIN,
-            role: 'user',
-          layer: 'action',
-          emphasis: 1,
-            content: '',
-            streaming: false,
-          },
-        });
-        connect(editor, assistantId, nextId);
-        relayoutAll(editor);
-        setActiveId(nextId);
+        if (isFromActive) {
+          const nextId = createShapeId();
+          const nextY = assistant.y + assistant.props.h + CARD_GAP_Y;
+          editor.createShape({
+            id: nextId,
+            type: 'card',
+            x: assistant.x,
+            y: nextY,
+            props: {
+              w: CARD_WIDTH,
+              h: CARD_HEIGHT_MIN,
+              role: 'user',
+              layer: 'action',
+              emphasis: 1,
+              content: '',
+              streaming: false,
+            },
+          });
+          connect(editor, assistantId, nextId);
+          relayoutAll(editor);
+          setActiveId(nextId);
 
-        const inputH = inputWrapRef.current?.offsetHeight ?? 140;
-        const viewportH = window.visualViewport?.height ?? window.innerHeight ?? 800;
-        const zoom = editor.getCamera().z || 1;
-        const desiredScreenY = Math.max(140, viewportH - inputH - 120);
-        const shift = (viewportH / 2 - desiredScreenY) / zoom;
-        editor.centerOnPoint(
-          { x: assistant.x + CARD_WIDTH / 2, y: nextY + CARD_HEIGHT_MIN / 2 + shift },
-          SMOOTH_CAMERA,
-        );
+          const inputH = inputWrapRef.current?.offsetHeight ?? 140;
+          const viewportH =
+            window.visualViewport?.height ?? window.innerHeight ?? 800;
+          const zoom = editor.getCamera().z || 1;
+          const desiredScreenY = Math.max(140, viewportH - inputH - 120);
+          const shift = (viewportH / 2 - desiredScreenY) / zoom;
+          editor.centerOnPoint(
+            {
+              x: assistant.x + CARD_WIDTH / 2,
+              y: nextY + CARD_HEIGHT_MIN / 2 + shift,
+            },
+            SMOOTH_CAMERA,
+          );
+        }
 
         // Spawn the reflection layer: presumption cards that surface the
         // implicit frame of this exchange, placed alongside the just-finished
@@ -290,7 +325,12 @@ export function App() {
         const fullHistory = [...history, { role: 'assistant' as const, content: buffer }];
         fetchReflections(fullHistory)
           .then((presumptions) => {
-            spawnPresumptions(editor, assistantId, presumptions);
+            spawnPresumptions(
+              editor,
+              assistantId,
+              presumptions,
+              reflectionsVisibleRef.current,
+            );
             relayoutAll(editor);
           })
           .catch(() => {});
@@ -305,7 +345,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [busy, historyFor],
+    [busy, activeId, historyFor],
   );
 
   const handleSubmit = useCallback(
@@ -376,32 +416,23 @@ export function App() {
       if (!editor) return;
       const p = editor.getShape(presumptionId) as unknown as CardShape | undefined;
       if (!p || p.props.role !== 'presumption') return;
-      // Keep the reflection card visible — it becomes the visible fork-point.
-      // Spawn the new action-layer user card directly BELOW the reflection,
-      // in the same column, and connect them with a regular arrow. Because
-      // the reflection still has its dashed arrow up to the source assistant,
-      // historyFor's arrow-walk finds the full conversation ancestry: new
-      // user → reflection (skipped, layer=reflection) → source assistant → …
-      const newId = createShapeId();
-      editor.createShape({
-        id: newId,
+      // Promote the reflection in place — it IS the user turn now, no need to
+      // clone its text into a new card. Flip role to 'user' and layer to
+      // 'action' so history-walking includes it, then run the turn from this
+      // same card. runTurnFrom will re-commit the content (with normalized
+      // casing) and spawn the assistant + next-user chain directly below.
+      editor.updateShape({
+        id: presumptionId,
         type: 'card',
-        x: p.x,
-        y: p.y + p.props.h + CARD_GAP_Y,
         props: {
-          w: CARD_WIDTH,
-          h: CARD_HEIGHT_MIN,
+          ...p.props,
           role: 'user',
           layer: 'action',
-          emphasis: 1,
-          content: '',
-          streaming: false,
         },
       });
-      connect(editor, presumptionId, newId);
       const label = p.props.content.trim();
       const query = label.charAt(0).toLowerCase() + label.slice(1);
-      void runTurnFrom(newId, query);
+      void runTurnFrom(presumptionId, query);
     },
     [runTurnFrom],
   );
@@ -963,19 +994,38 @@ function gatherEmphasized(editor: Editor): string[] {
  * not a background aside. Their lavender border and dashed provenance arrow
  * keep them readable as "the other layer."
  */
+function syncReflectionArrows(editor: Editor | null, visible: boolean): void {
+  if (!editor) return;
+  const arrows = editor
+    .getCurrentPageShapes()
+    .filter(
+      (s) =>
+        s.type === 'arrow' &&
+        (s.meta as { kind?: string } | undefined)?.kind === 'reflection',
+    );
+  const target = visible ? 0.7 : 0;
+  for (const a of arrows) {
+    if (a.opacity === target) continue;
+    editor.updateShape({ id: a.id, type: 'arrow', isLocked: false });
+    editor.updateShape({ id: a.id, type: 'arrow', opacity: target });
+    editor.updateShape({ id: a.id, type: 'arrow', isLocked: true });
+  }
+}
+
 function spawnPresumptions(
   editor: Editor,
   sourceAssistantId: TLShapeId,
   presumptions: Array<{ label: string; full: string }>,
+  visible = true,
 ): void {
   if (!presumptions.length) return;
   const source = editor.getShape(sourceAssistantId) as unknown as CardShape | undefined;
   if (!source) return;
 
-  // Walk left from the source's column until we find a column with no action
-  // cards in the vertical band we'd occupy. Without this, a right-side branch
-  // (e.g. at x=280) would place reflections at x=-200, colliding with the
-  // original main chain.
+  // Walk right from the source's column until we find a column with no action
+  // cards in the vertical band we'd occupy. Reflections now live to the right
+  // of the assistant they reflect on; collision detection keeps them off of
+  // any existing action branch column.
   const actionCards = editor
     .getCurrentPageShapes()
     .filter((s): s is CardShape => s.type === 'card')
@@ -983,7 +1033,7 @@ function spawnPresumptions(
     .filter((c) => c.props.layer === 'action');
   const minY = source.y;
   const maxY = source.y + presumptions.length * (CARD_HEIGHT_MIN + CARD_GAP_Y);
-  let reflectX = source.x - CARD_WIDTH - CARD_GAP_X;
+  let reflectX = source.x + CARD_WIDTH + CARD_GAP_X;
   const isOccupied = (x: number) =>
     actionCards.some(
       (c) =>
@@ -992,7 +1042,7 @@ function spawnPresumptions(
         c.y < maxY,
     );
   while (isOccupied(reflectX)) {
-    reflectX -= COLUMN_WIDTH;
+    reflectX += COLUMN_WIDTH;
   }
 
   let y = source.y;
@@ -1017,7 +1067,7 @@ function spawnPresumptions(
     });
     // Dashed lavender arrow from the assistant card to each presumption so
     // the provenance is visually explicit, not just positional.
-    connectReflection(editor, sourceAssistantId, id);
+    connectReflection(editor, sourceAssistantId, id, visible);
     // Advance by the actual measured-then-settled height (rough estimate
     // here; repositionChain would fix it if presumptions had children).
     y += CARD_HEIGHT_MIN + CARD_GAP_Y;
@@ -1075,10 +1125,15 @@ function connect(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
 
 /**
  * Reflection-layer arrow: dashed light-violet tie from an assistant card to
- * one of its presumptions. Anchors on the left edge of the assistant card so
+ * one of its presumptions on the right-side sidebar. Anchors right-to-left so
  * the arrow reads as "thinking leaking sideways," not as a continuation.
  */
-function connectReflection(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
+function connectReflection(
+  editor: Editor,
+  fromId: TLShapeId,
+  toId: TLShapeId,
+  visible = true,
+): void {
   const arrowId = createShapeId();
   try {
     editor.createShape({
@@ -1087,7 +1142,8 @@ function connectReflection(editor: Editor, fromId: TLShapeId, toId: TLShapeId): 
       x: 0,
       y: 0,
       isLocked: true,
-      opacity: 0.7,
+      opacity: visible ? 0.7 : 0,
+      meta: { kind: 'reflection' },
       props: {
         kind: 'elbow',
         color: 'light-violet',
@@ -1104,7 +1160,7 @@ function connectReflection(editor: Editor, fromId: TLShapeId, toId: TLShapeId): 
       toId: fromId,
       props: {
         terminal: 'start',
-        normalizedAnchor: { x: 0, y: 0.5 }, // left edge of assistant
+        normalizedAnchor: { x: 1, y: 0.5 }, // right edge of assistant
         isExact: false,
         isPrecise: true,
         snap: 'none',
@@ -1116,7 +1172,7 @@ function connectReflection(editor: Editor, fromId: TLShapeId, toId: TLShapeId): 
       toId: toId,
       props: {
         terminal: 'end',
-        normalizedAnchor: { x: 1, y: 0.5 }, // right edge of presumption
+        normalizedAnchor: { x: 0, y: 0.5 }, // left edge of presumption
         isExact: false,
         isPrecise: true,
         snap: 'none',

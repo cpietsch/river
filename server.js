@@ -36,7 +36,7 @@ LENGTH: 2-5 sentences, 40-100 words. Thorough but distilled. Plain prose — no 
 
 INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas in double brackets like [[this]]. Choose terms the reader might want to explore as its own branch. Keep each bracketed phrase short (1-4 words) and never nest brackets. The brackets render as tappable chips that spawn a new tributary in the canvas.`;
 
-const REFLECT_SYSTEM = `You are the reflection layer — a quiet observer that reads the conversation and surfaces 3 to 4 hidden assumptions the conversation is taking for granted without examining them.
+const REFLECT_SYSTEM = `You are the reflection layer — a quiet observer that reads the conversation and surfaces exactly 3 hidden assumptions the conversation is taking for granted without examining them.
 
 These are NOT follow-up questions. They are quiet things the conversation treats as obvious — cultural defaults, missing viewpoints, unstated values.
 
@@ -182,7 +182,7 @@ app.post('/api/reflect', async (req, res) => {
         label: sentenceCase(x.label.trim()),
         full: x.full.trim(),
       }))
-      .slice(0, 4);
+      .slice(0, 3);
     res.json({ presumptions });
   } catch (err) {
     console.error('reflect failed:', err?.message);

@@ -16,6 +16,10 @@
       overflow: hidden;
       /* Prevent pull-to-refresh and bounce scrolling on mobile */
       overscroll-behavior: none;
+      /* Tell the browser there's nothing to scroll/zoom — without this,
+         React 17+ binds touch listeners as passive and tldraw's
+         preventDefault() inside its onTouchStart logs warnings on every tap. */
+      touch-action: none;
     }
     body {
       font-family: system-ui, -apple-system, sans-serif;

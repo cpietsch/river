@@ -6,6 +6,8 @@ import {
   CARD_HEIGHT_MIN,
   type CardShape,
 } from './CardShape';
+
+const ACTIVE_CARD_HEIGHT = 170;
 import { CardActionsContext } from './CardActions';
 import {
   fetchMist,
@@ -52,7 +54,7 @@ export function App() {
         y: -CARD_HEIGHT_MIN / 2,
         props: {
           w: CARD_WIDTH,
-          h: CARD_HEIGHT_MIN,
+          h: ACTIVE_CARD_HEIGHT,
           role: 'user',
           content: '',
           streaming: false,
@@ -243,17 +245,6 @@ export function App() {
     [activeId, busy, historyFor, input],
   );
 
-  function onInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    const v = e.target.value;
-    setInput(v);
-    scheduleMist(v);
-  }
-  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void handleSubmit();
-    }
-  }
   function commitMist(c: MistCandidate) {
     setInput('');
     setMist([]);
@@ -279,7 +270,7 @@ export function App() {
       y: branchY + source.props.h + 60,
       props: {
         w: CARD_WIDTH,
-        h: CARD_HEIGHT_MIN,
+        h: ACTIVE_CARD_HEIGHT,
         role: 'user',
         content: '',
         streaming: false,
@@ -293,11 +284,68 @@ export function App() {
     );
   }, []);
 
-  const regenerate = useCallback((_turnId: TLShapeId) => {
-    // v0: no-op (regenerate in place is complex — cleanup, stream, etc.)
-    // The button is scaffolded so it shows up; wire up in a future pass.
-    console.info('regenerate not yet implemented');
-  }, []);
+  const regenerate = useCallback((turnId: TLShapeId) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const target = editor.getShape(turnId) as unknown as CardShape | undefined;
+    if (!target || target.props.role !== 'assistant') return;
+    // Clear the assistant card's content and stream a new reply from its chain.
+    editor.updateShape({
+      id: turnId,
+      type: 'card',
+      props: { content: '', streaming: true },
+    });
+    void (async () => {
+      const history = historyFor(turnId);
+      let buffer = '';
+      try {
+        await streamGenerate('', history.slice(0, -1), (delta) => {
+          buffer += delta;
+          editor.updateShape({
+            id: turnId,
+            type: 'card',
+            props: { content: buffer, streaming: true },
+          });
+          growToFit(editor, turnId, buffer);
+        });
+        editor.updateShape({
+          id: turnId,
+          type: 'card',
+          props: { content: buffer, streaming: false },
+        });
+      } catch (err) {
+        editor.updateShape({
+          id: turnId,
+          type: 'card',
+          props: { content: `[error: ${(err as Error).message}]`, streaming: false },
+        });
+      }
+    })();
+  }, [historyFor]);
+
+  const deleteCard = useCallback(
+    (turnId: TLShapeId) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      // Delete the card itself. tldraw bindings clean up the bound arrows automatically
+      // when the card they're bound to disappears.
+      editor.deleteShapes([turnId]);
+      // If we deleted the active card, promote the most recent empty user card,
+      // else the most recent user card of any kind.
+      if (turnId === activeId) {
+        const remaining = editor
+          .getCurrentPageShapes()
+          .filter((s): s is { id: TLShapeId } & CardShape => s.type === 'card')
+          .map((s) => s as unknown as CardShape);
+        const emptyUser = [...remaining]
+          .reverse()
+          .find((c) => c.props.role === 'user' && c.props.content.trim() === '');
+        const latest = remaining[remaining.length - 1];
+        setActiveId(emptyUser?.id ?? latest?.id ?? null);
+      }
+    },
+    [activeId],
+  );
 
   const startNew = useCallback(() => {
     const editor = editorRef.current;
@@ -312,7 +360,7 @@ export function App() {
       y: -CARD_HEIGHT_MIN / 2,
       props: {
         w: CARD_WIDTH,
-        h: CARD_HEIGHT_MIN,
+        h: ACTIVE_CARD_HEIGHT,
         role: 'user',
         content: '',
         streaming: false,
@@ -324,9 +372,26 @@ export function App() {
     editor.centerOnPoint({ x: 0, y: 0 }, { animation: { duration: 200 } });
   }, []);
 
+  function onInputChange(text: string): void {
+    setInput(text);
+    scheduleMist(text);
+  }
+
   return (
     <CardActionsContext.Provider
-      value={{ branchFrom, regenerate, activeId }}
+      value={{
+        branchFrom,
+        regenerate,
+        deleteCard,
+        activeId,
+        input,
+        setInput,
+        onInputChange,
+        mist,
+        submit: handleSubmit,
+        commitMist,
+        busy,
+      }}
     >
     <div style={{ position: 'fixed', inset: 0 }}>
       <Tldraw
@@ -378,153 +443,42 @@ export function App() {
         </button>
       </div>
 
-      <div
-        ref={inputWrapRef}
-        className="river-input-wrap"
-        style={{
-          position: 'fixed',
-          left: 0,
-          right: 0,
-          bottom: 'var(--kbd-offset, 0px)',
-          paddingLeft: 'max(12px, env(safe-area-inset-left))',
-          paddingRight: 'max(12px, env(safe-area-inset-right))',
-          paddingBottom: 'calc(12px + env(safe-area-inset-bottom))',
-          display: 'flex',
-          justifyContent: 'center',
-          pointerEvents: 'none',
-          zIndex: 1000,
-          transition: 'bottom 120ms ease',
-        }}
-      >
+      {/* Bottom hint area is only shown when there's no active card to host the input */}
+      {activeId == null && (
         <div
+          ref={inputWrapRef}
+          className="river-input-wrap"
           style={{
-            pointerEvents: 'auto',
-            width: 'min(720px, 100%)',
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 'var(--kbd-offset, 0px)',
+            paddingLeft: 'max(12px, env(safe-area-inset-left))',
+            paddingRight: 'max(12px, env(safe-area-inset-right))',
+            paddingBottom: 'calc(16px + env(safe-area-inset-bottom))',
             display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
+            justifyContent: 'center',
+            pointerEvents: 'none',
+            zIndex: 1000,
           }}
         >
-          {mist.length > 0 && (
-            <div
-              style={{
-                display: 'flex',
-                gap: 6,
-                flexWrap: 'nowrap',
-                overflowX: 'auto',
-                WebkitOverflowScrolling: 'touch',
-                scrollbarWidth: 'none',
-                padding: '4px 2px',
-                margin: '0 -4px',
-              }}
-            >
-              {mist.map((c) => (
-                <button
-                  key={c.label + c.full}
-                  type="button"
-                  onClick={() => commitMist(c)}
-                  title={c.full}
-                  style={{
-                    flex: '0 0 auto',
-                    padding: '8px 14px',
-                    background: '#fff6e6',
-                    border: '1px solid #e0a848',
-                    color: '#a86a12',
-                    borderRadius: 999,
-                    font: 'inherit',
-                    fontSize: 13,
-                    cursor: 'pointer',
-                    maxWidth: 260,
-                    textOverflow: 'ellipsis',
-                    overflow: 'hidden',
-                    whiteSpace: 'nowrap',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-                    WebkitTapHighlightColor: 'transparent',
-                    minHeight: 36,
-                  }}
-                >
-                  {c.label}
-                </button>
-              ))}
-            </div>
-          )}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void handleSubmit();
-            }}
+          <div
             style={{
-              display: 'flex',
-              gap: 8,
-              alignItems: 'flex-end',
-              background: '#ffffff',
-              padding: 8,
-              borderRadius: 18,
+              pointerEvents: 'auto',
+              padding: '12px 18px',
+              background: '#fff',
+              borderRadius: 999,
               border: '1px solid #1a1a1a',
-              boxShadow:
-                '0 10px 32px rgba(0,0,0,0.18), 0 3px 10px rgba(0,0,0,0.12)',
+              boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+              fontSize: 13,
+              color: '#555',
             }}
           >
-            <textarea
-              data-testid="river-input"
-              value={input}
-              disabled={busy}
-              placeholder={busy ? 'thinking…' : 'type here…'}
-              onChange={onInputChange}
-              onKeyDown={onKeyDown}
-              rows={1}
-              autoCorrect="on"
-              autoCapitalize="sentences"
-              style={{
-                flex: 1,
-                minWidth: 0,
-                padding: '12px 14px',
-                background: 'transparent',
-                border: 'none',
-                color: '#111',
-                fontFamily: 'inherit',
-                fontSize: 16,
-                lineHeight: 1.35,
-                resize: 'none',
-                outline: 'none',
-                minHeight: 44,
-                maxHeight: 160,
-              }}
-            />
-            <button
-              type="submit"
-              disabled={busy || input.trim().length === 0}
-              aria-label="Send"
-              data-testid="send"
-              style={{
-                flex: '0 0 auto',
-                width: 48,
-                height: 48,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: busy || input.trim().length === 0 ? '#e8e6e0' : '#111',
-                color: busy || input.trim().length === 0 ? '#8a8a8a' : '#fff',
-                border: 'none',
-                borderRadius: 14,
-                cursor: busy || input.trim().length === 0 ? 'default' : 'pointer',
-                transition: 'background 120ms ease',
-                WebkitTapHighlightColor: 'transparent',
-              }}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path
-                  d="M5 12h14M13 6l6 6-6 6"
-                  stroke="currentColor"
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-          </form>
+            tap "+ new" to start
+          </div>
         </div>
-      </div>
+      )}
+
 
       <style>{`
         @keyframes river-cursor-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }

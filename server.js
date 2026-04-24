@@ -16,9 +16,15 @@ const anthropic = new Anthropic({ apiKey });
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-const MAIN_SYSTEM = `You are the voice in a river-metaphor chat interface rendered as cards on an infinite canvas. HARD CONSTRAINT: ONE short sentence, under 20 words. No markdown, no lists, no asterisks, no headers. Plain prose only. If the user wants depth they will ask a follow-up.`;
+const MAIN_SYSTEM = `You are the voice in a river-metaphor chat interface rendered as cards on an infinite canvas.
+
+LENGTH: 2-5 sentences, 40-100 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.
+
+INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas in double brackets like [[this]]. Choose terms the reader might want to explore as its own branch. Keep each bracketed phrase short (1-4 words) and never nest brackets. The brackets render as tappable chips that spawn a new tributary in the canvas.`;
 
 const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user might continue what they are typing. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the full continuation the user might say). No prose, no markdown fence. Just the array.`;
+
+const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
 app.post('/api/generate', async (req, res) => {
   const { history = [], input = '' } = req.body ?? {};
@@ -37,7 +43,7 @@ app.post('/api/generate', async (req, res) => {
   try {
     const stream = anthropic.messages.stream({
       model: MAIN_MODEL,
-      max_tokens: 180,
+      max_tokens: 450,
       system: MAIN_SYSTEM,
       messages,
     });
@@ -56,21 +62,24 @@ app.post('/api/generate', async (req, res) => {
 
 app.post('/api/mist', async (req, res) => {
   const { history = [], input = '' } = req.body ?? {};
-  if (!input.trim()) {
+  const isFollowUp = !input.trim();
+  if (isFollowUp && history.length === 0) {
     res.json({ candidates: [] });
     return;
   }
+  const filteredHistory = history.filter((m) => m.role === 'user' || m.role === 'assistant');
+  const systemPrompt = isFollowUp ? FOLLOWUP_SYSTEM : MIST_SYSTEM;
+  const userMessage = isFollowUp
+    ? 'Based on the conversation so far, suggest 2-4 follow-up directions as a JSON array.'
+    : `I am currently typing: """${input}"""\n\nSuggest 2-4 diverse continuations as a JSON array.`;
   try {
     const response = await anthropic.messages.create({
       model: MIST_MODEL,
       max_tokens: 400,
-      system: MIST_SYSTEM,
+      system: systemPrompt,
       messages: [
-        ...history.filter((m) => m.role === 'user' || m.role === 'assistant'),
-        {
-          role: 'user',
-          content: `I am currently typing: """${input}"""\n\nSuggest 2-4 diverse continuations as a JSON array.`,
-        },
+        ...filteredHistory,
+        { role: 'user', content: userMessage },
       ],
     });
     const raw = response.content.map((b) => (b.type === 'text' ? b.text : '')).join('');

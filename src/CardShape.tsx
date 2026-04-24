@@ -14,7 +14,9 @@ export type CardShape = TLBaseShape<
   {
     w: number;
     h: number;
-    role: 'user' | 'assistant';
+    role: 'user' | 'assistant' | 'presumption';
+    layer: 'action' | 'reflection';
+    emphasis: number;
     content: string;
     streaming: boolean;
   }
@@ -23,7 +25,9 @@ export type CardShape = TLBaseShape<
 const cardShapeProps: RecordProps<CardShape> = {
   w: T.number,
   h: T.number,
-  role: T.literalEnum('user', 'assistant'),
+  role: T.literalEnum('user', 'assistant', 'presumption'),
+  layer: T.literalEnum('action', 'reflection'),
+  emphasis: T.number,
   content: T.string,
   streaming: T.boolean,
 };
@@ -47,6 +51,8 @@ export class CardShapeUtil extends ShapeUtil<CardShape> {
       w: CARD_WIDTH,
       h: CARD_HEIGHT_MIN,
       role: 'user',
+      layer: 'action',
+      emphasis: 1,
       content: '',
       streaming: false,
     };
@@ -70,12 +76,15 @@ export class CardShapeUtil extends ShapeUtil<CardShape> {
 }
 
 function CardBody({ shape }: { shape: CardShape }) {
-  const { role, content, streaming, w, h } = shape.props;
+  const { role, content, streaming, w, h, layer, emphasis } = shape.props;
   const isUser = role === 'user';
+  const isReflection = layer === 'reflection';
+  const isPresumption = role === 'presumption';
   const actions = useCardActions();
   const isActive = actions?.activeId === shape.id;
   const contentRef = useRef<HTMLDivElement | null>(null);
   const resizeCard = actions?.resizeCard;
+  const reflectionsVisible = actions?.reflectionsVisible ?? true;
 
   // Measure the content block so the card's shape height matches exactly the
   // rendered text — one source of truth, no character-count heuristic.
@@ -88,7 +97,7 @@ function CardBody({ shape }: { shape: CardShape }) {
     // height with a bogus value or the card turns into a one-pixel sliver.
     if (measured <= 0) return;
     resizeCard(shape.id, measured);
-  }, [content, streaming, w, isActive, isUser, resizeCard, shape.id]);
+  }, [content, streaming, w, isActive, isUser, resizeCard, shape.id, reflectionsVisible]);
 
   // ACTIVE USER CARD = embedded chat input (only when content is still empty;
   // once submitted the card immediately shows the committed text).
@@ -96,36 +105,71 @@ function CardBody({ shape }: { shape: CardShape }) {
     return <ActiveInputCard w={w} h={h} />;
   }
 
-  const bg = isUser ? '#fffef9' : '#f2f7ff';
-  const borderColor = isUser ? '#d4d2c8' : '#a8c8ff';
+  // Color tokens keyed by role + layer.
+  const bg = isPresumption
+    ? '#faf4ff' // pale lavender
+    : isUser
+      ? '#fffef9'
+      : '#f2f7ff';
+  const borderColor = isPresumption
+    ? '#8a5cc4' // solid lavender — matches the active input card's 2px weight
+    : isUser
+      ? '#d4d2c8'
+      : '#a8c8ff';
+
+  // Emphasis pushes the border red and thicker — visual weight doubles as a
+  // prompt signal (see prompt-weighting pass in App.tsx).
+  const emph = emphasis ?? 1;
+  const isEmphasized = emph >= 2;
+  const emphBorder = isEmphasized ? '#e24a4a' : borderColor;
+  // Presumption cards get 2px (same weight as the active input card) so they
+  // read as first-class-citizen choices, not a secondary sidebar.
+  const emphWidth = isEmphasized ? 2 : isPresumption ? 2 : 1;
+
+  // Reflection-layer cards still toggle off entirely via the X-ray button;
+  // when on, they render at full opacity (equal weight to action cards).
+  const layerOpacity = isReflection ? (reflectionsVisible ? 1 : 0) : 1;
+  const pointerEvents = isReflection && !reflectionsVisible ? 'none' : 'all';
+
+  const hoverTitle = isPresumption
+    ? ((shape.meta as { fullPresumption?: string } | undefined)?.fullPresumption ?? '')
+    : '';
 
   return (
     <HTMLContainer
       id={shape.id}
       className="river-card"
+      title={hoverTitle}
       style={{
         width: w,
         height: h,
         position: 'relative',
         background: bg,
-        border: `1px solid ${borderColor}`,
+        border: `${emphWidth}px solid ${emphBorder}`,
         borderRadius: 10,
         color: '#111',
         fontFamily: 'system-ui, -apple-system, sans-serif',
         fontSize: 14,
         lineHeight: 1.5,
         overflow: 'hidden',
-        pointerEvents: 'all',
+        pointerEvents,
+        opacity: layerOpacity,
+        transition: 'opacity 220ms ease',
         boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04)',
       }}
     >
       <div
         ref={contentRef}
         style={{
-          padding: '10px 36px 10px 12px',
+          // Reserve ~34px of bottom padding so the floating icon row below
+          // never sits on top of the last line of text.
+          padding: '10px 12px 34px 12px',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          color: content ? '#111' : '#bbb',
+          fontSize: 14,
+          lineHeight: 1.5,
+          fontWeight: isPresumption ? 500 : 400,
+          color: content ? (isPresumption ? '#4a2d6b' : '#111') : '#bbb',
           fontStyle: content ? 'normal' : 'italic',
         }}
       >
@@ -137,12 +181,14 @@ function CardBody({ shape }: { shape: CardShape }) {
         {streaming && <span className="river-cursor">▊</span>}
       </div>
 
+      {/* Action icons: same two on every card (branch + like), bottom-right so
+          they never overlap text. Faded when idle, prominent on hover. */}
       <div
         className="river-card-actions"
         style={{
           position: 'absolute',
-          top: 6,
-          right: 6,
+          bottom: 4,
+          right: 4,
           display: 'flex',
           gap: 2,
           opacity: 0.35,
@@ -150,8 +196,12 @@ function CardBody({ shape }: { shape: CardShape }) {
         }}
       >
         <IconButton
-          label="branch"
-          onClick={() => actions?.branchFrom(shape.id)}
+          label={isPresumption ? 'branch from this presumption' : 'branch'}
+          onClick={() =>
+            isPresumption
+              ? actions?.promoteReflection(shape.id)
+              : actions?.branchFrom(shape.id)
+          }
         >
           <path
             d="M7 5v9a4 4 0 0 0 4 4h7M15 14l3 3-3 3"
@@ -162,14 +212,16 @@ function CardBody({ shape }: { shape: CardShape }) {
           />
         </IconButton>
         <IconButton
-          label="delete"
-          onClick={() => actions?.deleteCard(shape.id)}
+          label={isEmphasized ? 'unlike' : 'like (priority)'}
+          onClick={() => actions?.toggleEmphasis(shape.id)}
         >
           <path
-            d="M6 6l12 12M18 6L6 18"
+            d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="1.8"
+            fill={isEmphasized ? '#e24a4a' : 'none'}
             strokeLinecap="round"
+            strokeLinejoin="round"
           />
         </IconButton>
       </div>
@@ -228,11 +280,10 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
   }, []);
 
   const input = actions?.input ?? '';
-  const mist = actions?.mist ?? [];
   const resizeActive = actions?.resizeActive;
 
-  // Measure the actual content height so wrap-aware suggestion bubbles and
-  // growing textareas both feed a correct card height.
+  // Measure the actual content height so the growing textarea feeds a correct
+  // card height — no scrollbar, no wasted space.
   useLayoutEffect(() => {
     const ta = taRef.current;
     const root = rootRef.current;
@@ -242,10 +293,10 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     const measured = root.scrollHeight;
     if (measured <= 0) return; // culled/unmounted — leave stored height alone
     resizeActive(measured);
-  }, [input, mist, resizeActive]);
+  }, [input, resizeActive]);
 
   if (!actions) return null;
-  const { onInputChange, submit, commitMist, busy } = actions;
+  const { onInputChange, submit, busy } = actions;
   const canSend = !busy && input.trim().length > 0;
 
   return (
@@ -270,41 +321,11 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 6,
         padding: '8px 10px 10px',
       }}
     >
-      {/* Suggestion bubbles — full-width, stacked vertically */}
-      {mist.map((c, i) => (
-        <button
-          key={c.label + c.full}
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            commitMist(c);
-          }}
-          title={c.full}
-          style={{
-            width: '100%',
-            padding: '10px 14px',
-            background: i === 0 ? '#111' : '#f7f6f2',
-            color: i === 0 ? '#fff' : '#333',
-            border: i === 0 ? 'none' : '1px solid #e0dfd9',
-            borderRadius: 10,
-            font: 'inherit',
-            fontSize: 13,
-            fontWeight: i === 0 ? 600 : 400,
-            cursor: 'pointer',
-            textAlign: 'left',
-            WebkitTapHighlightColor: 'transparent',
-          }}
-        >
-          {c.label}
-        </button>
-      ))}
-
-      {/* Input bubble — same visual weight as suggestions */}
+      {/* Input bubble — the only thing in the active card now. Reflections
+          handle the "what should I ask next" surface, not suggestion pills. */}
       <div
         style={{
           display: 'flex',

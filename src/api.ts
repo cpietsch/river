@@ -2,6 +2,23 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export type MistCandidate = { label: string; full: string };
 
+export type Presumption = { label: string; full: string };
+
+export async function fetchReflections(history: ChatMessage[]): Promise<Presumption[]> {
+  try {
+    const res = await fetch('/api/reflect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ history }),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { presumptions?: Presumption[] };
+    return data.presumptions ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchMist(input: string, history: ChatMessage[]): Promise<MistCandidate[]> {
   try {
     const res = await fetch('/api/mist', {
@@ -26,11 +43,12 @@ export async function streamGenerate(
   history: ChatMessage[],
   onDelta: (text: string) => void,
   signal?: AbortSignal,
+  emphasized: string[] = [],
 ): Promise<string> {
   const res = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input, history }),
+    body: JSON.stringify({ input, history, emphasized }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`generate failed ${res.status}`);

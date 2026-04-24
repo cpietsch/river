@@ -18,10 +18,9 @@ import {
 const ACTIVE_CARD_HEIGHT = 170;
 import { CardActionsContext } from './CardActions';
 import {
-  fetchMist,
+  fetchReflections,
   streamGenerate,
   type ChatMessage,
-  type MistCandidate,
 } from './api';
 
 const shapeUtils = [CardShapeUtil];
@@ -31,28 +30,8 @@ const SMOOTH_CAMERA = {
 } as const;
 
 // Prototype-only seed: pre-fill the input on fresh sessions so the dev can
-// hammer Enter to watch a flow instead of thinking up a prompt each time.
-const SEED_QUESTIONS = [
-  'What is consciousness?',
-  'Why do we dream?',
-  'How did language evolve?',
-  'What is dark matter?',
-  'Why is the sky blue?',
-  'What makes music emotional?',
-  'How do birds navigate?',
-  'What is time?',
-  'Why do humans laugh?',
-  'What is the purpose of sleep?',
-  'How do plants communicate?',
-  'What is beauty?',
-  'Why do we have emotions?',
-  'What is gravity?',
-  'How do octopuses think?',
-  'What is information?',
-];
-function randomSeed(): string {
-  return SEED_QUESTIONS[Math.floor(Math.random() * SEED_QUESTIONS.length)];
-}
+// hammer Enter and compare responses across iterations using the same prompt.
+const START_SEED = 'LUCKFOX PicoKVM Base vs NanoKVM';
 
 // Suppress tldraw's built-in context menu — we render our own.
 // Setting to null makes tldraw fall through to rendering <Canvas /> directly.
@@ -70,12 +49,10 @@ export function App() {
   const editorRef = useRef<Editor | null>(null);
   const [activeId, setActiveId] = useState<TLShapeId | null>(null);
   const [input, setInput] = useState('');
-  const [mist, setMist] = useState<MistCandidate[]>([]);
   const [busy, setBusy] = useState(false);
-  const mistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const mistReqIdRef = useRef(0);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const [reflectionsVisible, setReflectionsVisible] = useState(true);
 
   const handleMount = useCallback((editor: Editor) => {
     editorRef.current = editor;
@@ -101,6 +78,26 @@ export function App() {
       { source: 'user', scope: 'session' },
     );
 
+    // Sweep orphaned arrows from prior sessions: any arrow whose bindings no
+    // longer reach an existing shape. Accumulates across hot-reloads and crash
+    // recoveries if shapes were deleted without the arrow being cleaned.
+    {
+      const arrows = editor
+        .getCurrentPageShapes()
+        .filter((s) => s.type === 'arrow');
+      const orphanIds: TLShapeId[] = [];
+      for (const a of arrows) {
+        const bs = editor.getBindingsFromShape(a, 'arrow');
+        if (bs.length < 2) {
+          orphanIds.push(a.id);
+          continue;
+        }
+        const missing = bs.some((b) => !editor.getShape(b.toId as TLShapeId));
+        if (missing) orphanIds.push(a.id);
+      }
+      if (orphanIds.length) editor.deleteShapes(orphanIds);
+    }
+
     const hasAny = editor.getCurrentPageShapes().some((s) => s.type === 'card');
     if (!hasAny) {
       const id = createShapeId();
@@ -113,12 +110,14 @@ export function App() {
           w: CARD_WIDTH,
           h: ACTIVE_CARD_HEIGHT,
           role: 'user',
+          layer: 'action',
+          emphasis: 1,
           content: '',
           streaming: false,
         },
       });
       setActiveId(id);
-      setInput(randomSeed());
+      setInput(START_SEED);
       // Center at origin with zoom 1 — predictable placement for mobile.
       editor.setCamera({ x: window.innerWidth / 2, y: 180, z: 1 }, { animation: { duration: 0 } });
     } else {
@@ -136,45 +135,42 @@ export function App() {
   const historyFor = useCallback((leafId: TLShapeId | null): ChatMessage[] => {
     const editor = editorRef.current;
     if (!editor || leafId == null) return [];
-    // In v0 we rely on vertical stacking order: every card above the leaf
-    // at roughly the same x is part of the chain. Simpler than walking arrows,
-    // good enough for the prototype.
-    const shapes = editor
-      .getCurrentPageShapes()
-      .filter((s): s is CardShape => s.type === 'card') as unknown as CardShape[];
-    const leaf = shapes.find((c) => c.id === leafId);
-    if (!leaf) return [];
-    const chain = shapes
-      .filter((c) => Math.abs(c.x - leaf.x) < 200 && c.y <= leaf.y)
-      .sort((a, b) => a.y - b.y)
-      .filter((c) => c.props.content.trim() !== '')
-      .map((c) => ({ role: c.props.role, content: c.props.content }));
-    return chain;
-  }, []);
-
-  const scheduleMist = useCallback(
-    (text: string) => {
-      if (mistDebounceRef.current) clearTimeout(mistDebounceRef.current);
-      const myId = ++mistReqIdRef.current;
-      if (text.trim() === '') {
-        setMist([]);
-        return;
+    // Walk arrows upward from the leaf to reconstruct the exact chain of
+    // ancestors — branches leave the X-column, so positional heuristics would
+    // lose context. Reflection cards are skipped; presumption cards are a
+    // sidebar, not parents.
+    const chain: CardShape[] = [];
+    const seen = new Set<TLShapeId>();
+    let currentId: TLShapeId | null = leafId;
+    while (currentId && !seen.has(currentId)) {
+      seen.add(currentId);
+      const card = editor.getShape(currentId) as unknown as CardShape | undefined;
+      if (!card || card.type !== 'card') break;
+      if (
+        card.props.layer !== 'reflection' &&
+        (card.props.role === 'user' || card.props.role === 'assistant')
+      ) {
+        chain.push(card);
       }
-      mistDebounceRef.current = setTimeout(async () => {
-        const history = historyFor(activeId);
-        const candidates = await fetchMist(text, history);
-        if (myId === mistReqIdRef.current) setMist(candidates);
-      }, 600);
-    },
-    [activeId, historyFor],
-  );
-
-  useEffect(
-    () => () => {
-      if (mistDebounceRef.current) clearTimeout(mistDebounceRef.current);
-    },
-    [],
-  );
+      // Parent = the card on the 'start' end of any arrow ending on this card.
+      const incoming: { fromId: TLShapeId }[] = editor
+        .getBindingsToShape(currentId, 'arrow')
+        .filter((b) => b.props.terminal === 'end') as { fromId: TLShapeId }[];
+      if (incoming.length === 0) break;
+      const arrowId: TLShapeId = incoming[0].fromId;
+      const startBinding: { toId: TLShapeId } | undefined = editor
+        .getBindingsFromShape(arrowId, 'arrow')
+        .find((b) => b.props.terminal === 'start') as { toId: TLShapeId } | undefined;
+      currentId = startBinding?.toId ?? null;
+    }
+    return chain
+      .reverse()
+      .filter((c) => c.props.content.trim() !== '')
+      .map((c) => ({
+        role: c.props.role as 'user' | 'assistant',
+        content: c.props.content,
+      }));
+  }, []);
 
   // Mobile: track the visual viewport so the input bar stays above the
   // software keyboard instead of being hidden behind it.
@@ -201,9 +197,6 @@ export function App() {
 
       setBusy(true);
       setInput('');
-      setMist([]);
-      mistReqIdRef.current++;
-      if (mistDebounceRef.current) clearTimeout(mistDebounceRef.current);
 
       // Commit user text. Works for empty-active cards and for freshly-created
       // branch cards alike.
@@ -224,6 +217,8 @@ export function App() {
           w: CARD_WIDTH,
           h: CARD_HEIGHT_MIN,
           role: 'assistant',
+          layer: 'action',
+          emphasis: 1,
           content: '',
           streaming: true,
         },
@@ -233,15 +228,24 @@ export function App() {
 
       try {
         const history = historyFor(userCardId);
+        // Collect all emphasized card contents in the conversation — these get
+        // injected as priority constraints into the system prompt.
+        const emphasized = gatherEmphasized(editor);
         let buffer = '';
-        await streamGenerate(text, history.slice(0, -1), (delta) => {
-          buffer += delta;
-          editor.updateShape({
-            id: assistantId,
-            type: 'card',
-            props: { content: buffer, streaming: true },
-          });
-        });
+        await streamGenerate(
+          text,
+          history.slice(0, -1),
+          (delta) => {
+            buffer += delta;
+            editor.updateShape({
+              id: assistantId,
+              type: 'card',
+              props: { content: buffer, streaming: true },
+            });
+          },
+          undefined,
+          emphasized,
+        );
         editor.updateShape({
           id: assistantId,
           type: 'card',
@@ -260,6 +264,8 @@ export function App() {
             w: CARD_WIDTH,
             h: CARD_HEIGHT_MIN,
             role: 'user',
+          layer: 'action',
+          emphasis: 1,
             content: '',
             streaming: false,
           },
@@ -278,11 +284,14 @@ export function App() {
           SMOOTH_CAMERA,
         );
 
-        const followUpId = ++mistReqIdRef.current;
+        // Spawn the reflection layer: presumption cards that surface the
+        // implicit frame of this exchange, placed alongside the just-finished
+        // assistant card in a parallel column, each tied by a dashed arrow.
         const fullHistory = [...history, { role: 'assistant' as const, content: buffer }];
-        fetchMist('', fullHistory)
-          .then((suggestions) => {
-            if (mistReqIdRef.current === followUpId) setMist(suggestions);
+        fetchReflections(fullHistory)
+          .then((presumptions) => {
+            spawnPresumptions(editor, assistantId, presumptions);
+            relayoutAll(editor);
           })
           .catch(() => {});
       } catch (err) {
@@ -309,12 +318,6 @@ export function App() {
     [activeId, input, runTurnFrom],
   );
 
-  function commitMist(c: MistCandidate) {
-    setInput('');
-    setMist([]);
-    void handleSubmit(c.full);
-  }
-
   const createBranchUserCard = useCallback((sourceId: TLShapeId): TLShapeId | null => {
     const editor = editorRef.current;
     if (!editor) return null;
@@ -332,6 +335,8 @@ export function App() {
         w: CARD_WIDTH,
         h: ACTIVE_CARD_HEIGHT,
         role: 'user',
+          layer: 'action',
+          emphasis: 1,
         content: '',
         streaming: false,
       },
@@ -364,6 +369,51 @@ export function App() {
     },
     [createBranchUserCard, runTurnFrom],
   );
+
+  const promoteReflection = useCallback(
+    (presumptionId: TLShapeId) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const p = editor.getShape(presumptionId) as unknown as CardShape | undefined;
+      if (!p || p.props.role !== 'presumption') return;
+      // Keep the reflection card visible — it becomes the visible fork-point.
+      // Spawn the new action-layer user card directly BELOW the reflection,
+      // in the same column, and connect them with a regular arrow. Because
+      // the reflection still has its dashed arrow up to the source assistant,
+      // historyFor's arrow-walk finds the full conversation ancestry: new
+      // user → reflection (skipped, layer=reflection) → source assistant → …
+      const newId = createShapeId();
+      editor.createShape({
+        id: newId,
+        type: 'card',
+        x: p.x,
+        y: p.y + p.props.h + CARD_GAP_Y,
+        props: {
+          w: CARD_WIDTH,
+          h: CARD_HEIGHT_MIN,
+          role: 'user',
+          layer: 'action',
+          emphasis: 1,
+          content: '',
+          streaming: false,
+        },
+      });
+      connect(editor, presumptionId, newId);
+      const label = p.props.content.trim();
+      const query = label.charAt(0).toLowerCase() + label.slice(1);
+      void runTurnFrom(newId, query);
+    },
+    [runTurnFrom],
+  );
+
+  const toggleEmphasis = useCallback((id: TLShapeId) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const s = editor.getShape(id) as unknown as CardShape | undefined;
+    if (!s) return;
+    const next = (s.props.emphasis ?? 1) >= 2 ? 1 : 2;
+    editor.updateShape({ id, type: 'card', props: { emphasis: next } });
+  }, []);
 
   const deleteCard = useCallback(
     (turnId: TLShapeId) => {
@@ -422,19 +472,19 @@ export function App() {
         w: CARD_WIDTH,
         h: ACTIVE_CARD_HEIGHT,
         role: 'user',
+          layer: 'action',
+          emphasis: 1,
         content: '',
         streaming: false,
       },
     });
     setActiveId(id);
-    setInput(randomSeed());
-    setMist([]);
+    setInput(START_SEED);
     editor.centerOnPoint({ x: 0, y: 0 }, SMOOTH_CAMERA);
   }, []);
 
   function onInputChange(text: string): void {
     setInput(text);
-    scheduleMist(text);
   }
 
   const resizeActive = useCallback(
@@ -470,14 +520,15 @@ export function App() {
       value={{
         branchFrom,
         branchAbout,
+        promoteReflection,
+        toggleEmphasis,
         deleteCard,
         activeId,
+        reflectionsVisible,
         input,
         setInput,
         onInputChange,
-        mist,
         submit: handleSubmit,
-        commitMist,
         resizeActive,
         resizeCard,
         busy,
@@ -502,7 +553,7 @@ export function App() {
         shapeUtils={shapeUtils}
         components={components}
         onMount={handleMount}
-        persistenceKey="river-2"
+        persistenceKey="river-2-reflection"
         hideUi
         inferDarkMode={false}
       />
@@ -545,6 +596,42 @@ export function App() {
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
           </svg>
           new
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setReflectionsVisible((v) => !v)}
+          aria-label="Toggle reflection layer"
+          data-testid="toggle-reflections"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '10px 14px',
+            background: reflectionsVisible ? '#4a2d6b' : '#fff',
+            color: reflectionsVisible ? '#fff' : '#4a2d6b',
+            border: '1px solid #4a2d6b',
+            borderRadius: 999,
+            font: 'inherit',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 3px 10px rgba(0,0,0,0.1)',
+            WebkitTapHighlightColor: 'transparent',
+            minHeight: 40,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" fill={reflectionsVisible ? 'currentColor' : 'none'} />
+          </svg>
+          {reflectionsVisible ? 'reflection on' : 'reflection off'}
         </button>
       </div>
 
@@ -755,7 +842,8 @@ const COLUMN_WIDTH = CARD_WIDTH + CARD_GAP_X;
 function relayoutAll(editor: Editor): void {
   const shapes = editor
     .getCurrentPageShapes()
-    .filter((s): s is CardShape => s.type === 'card') as unknown as CardShape[];
+    .filter((s): s is CardShape => s.type === 'card')
+    .filter((s) => s.props.layer !== 'reflection') as unknown as CardShape[];
   if (shapes.length === 0) return;
 
   // Build parent → children map via arrow bindings.
@@ -773,6 +861,10 @@ function relayoutAll(editor: Editor): void {
         .find((x) => x.props.terminal === 'end');
       if (!endBinding) continue;
       const childId = endBinding.toId as TLShapeId;
+      const childShape = editor.getShape(childId) as unknown as CardShape | undefined;
+      // Reflection children don't participate in action-tree layout — they're
+      // positioned by spawnPresumptions in their own sidebar column.
+      if (!childShape || childShape.props.layer === 'reflection') continue;
       children.get(s.id)?.push(childId);
       hasParent.add(childId);
     }
@@ -840,12 +932,98 @@ function repositionChain(editor: Editor, sourceId: TLShapeId): void {
     const childId = endBinding.toId as TLShapeId;
     const child = editor.getShape(childId) as unknown as CardShape | undefined;
     if (!child) continue;
+    // Reflection-layer cards have their own vertical stacking in the sidebar
+    // column — don't drag them into the action chain's flow.
+    if (child.props.layer === 'reflection') continue;
     if (Math.abs(child.y - targetY) >= 1) {
       editor.updateShape({ id: childId, type: 'card', y: targetY });
     }
     repositionChain(editor, childId);
   }
 }
+
+/**
+ * Collect the content of every emphasized (emphasis >= 2) card. These strings
+ * are injected as priority constraints at the top of the LLM system prompt,
+ * so visual weight on the canvas becomes semantic weight in the model.
+ */
+function gatherEmphasized(editor: Editor): string[] {
+  return editor
+    .getCurrentPageShapes()
+    .filter((s): s is CardShape => s.type === 'card')
+    .map((s) => s as unknown as CardShape)
+    .filter((c) => (c.props.emphasis ?? 1) >= 2 && c.props.content.trim() !== '')
+    .map((c) => c.props.content.trim());
+}
+
+/**
+ * Place reflection-layer presumption cards adjacent to the assistant they
+ * reflect on. Styled as first-class citizens — same width and typographic
+ * weight as the input card — so the reflections are equal-footing options,
+ * not a background aside. Their lavender border and dashed provenance arrow
+ * keep them readable as "the other layer."
+ */
+function spawnPresumptions(
+  editor: Editor,
+  sourceAssistantId: TLShapeId,
+  presumptions: Array<{ label: string; full: string }>,
+): void {
+  if (!presumptions.length) return;
+  const source = editor.getShape(sourceAssistantId) as unknown as CardShape | undefined;
+  if (!source) return;
+
+  // Walk left from the source's column until we find a column with no action
+  // cards in the vertical band we'd occupy. Without this, a right-side branch
+  // (e.g. at x=280) would place reflections at x=-200, colliding with the
+  // original main chain.
+  const actionCards = editor
+    .getCurrentPageShapes()
+    .filter((s): s is CardShape => s.type === 'card')
+    .map((s) => s as unknown as CardShape)
+    .filter((c) => c.props.layer === 'action');
+  const minY = source.y;
+  const maxY = source.y + presumptions.length * (CARD_HEIGHT_MIN + CARD_GAP_Y);
+  let reflectX = source.x - CARD_WIDTH - CARD_GAP_X;
+  const isOccupied = (x: number) =>
+    actionCards.some(
+      (c) =>
+        Math.abs(c.x - x) < CARD_WIDTH / 2 &&
+        c.y + c.props.h > minY &&
+        c.y < maxY,
+    );
+  while (isOccupied(reflectX)) {
+    reflectX -= COLUMN_WIDTH;
+  }
+
+  let y = source.y;
+  for (const p of presumptions) {
+    const id = createShapeId();
+    editor.createShape({
+      id,
+      type: 'card',
+      x: reflectX,
+      y,
+      meta: { reflectionSource: sourceAssistantId, fullPresumption: p.full },
+      props: {
+        w: CARD_WIDTH,
+        h: CARD_HEIGHT_MIN,
+        role: 'presumption',
+        layer: 'reflection',
+        emphasis: 1,
+        // Display the terse label — the full sentence lives in meta for hover.
+        content: p.label,
+        streaming: false,
+      },
+    });
+    // Dashed lavender arrow from the assistant card to each presumption so
+    // the provenance is visually explicit, not just positional.
+    connectReflection(editor, sourceAssistantId, id);
+    // Advance by the actual measured-then-settled height (rough estimate
+    // here; repositionChain would fix it if presumptions had children).
+    y += CARD_HEIGHT_MIN + CARD_GAP_Y;
+  }
+}
+
 
 function connect(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
   const arrowId = createShapeId();
@@ -892,6 +1070,60 @@ function connect(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
     });
   } catch (err) {
     console.warn('connect failed — skipping arrow', err);
+  }
+}
+
+/**
+ * Reflection-layer arrow: dashed light-violet tie from an assistant card to
+ * one of its presumptions. Anchors on the left edge of the assistant card so
+ * the arrow reads as "thinking leaking sideways," not as a continuation.
+ */
+function connectReflection(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
+  const arrowId = createShapeId();
+  try {
+    editor.createShape({
+      id: arrowId,
+      type: 'arrow',
+      x: 0,
+      y: 0,
+      isLocked: true,
+      opacity: 0.7,
+      props: {
+        kind: 'elbow',
+        color: 'light-violet',
+        size: 's',
+        dash: 'dashed',
+        arrowheadStart: 'none',
+        arrowheadEnd: 'arrow',
+        richText: toRichText(''),
+      },
+    });
+    editor.createBinding({
+      type: 'arrow',
+      fromId: arrowId,
+      toId: fromId,
+      props: {
+        terminal: 'start',
+        normalizedAnchor: { x: 0, y: 0.5 }, // left edge of assistant
+        isExact: false,
+        isPrecise: true,
+        snap: 'none',
+      },
+    });
+    editor.createBinding({
+      type: 'arrow',
+      fromId: arrowId,
+      toId: toId,
+      props: {
+        terminal: 'end',
+        normalizedAnchor: { x: 1, y: 0.5 }, // right edge of presumption
+        isExact: false,
+        isPrecise: true,
+        snap: 'none',
+      },
+    });
+  } catch (err) {
+    console.warn('connectReflection failed — skipping arrow', err);
   }
 }
 

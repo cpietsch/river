@@ -577,8 +577,10 @@ function BranchChip({
   // Marker / highlighter metaphor: selected text is "painted" with a
   // translucent yellow stroke that lays behind the words (linear-gradient
   // limits the band to the middle of the line so it reads like marker on
-  // paper, not a full background fill). Unselected stays a subtle dotted
-  // underline; hover previews the stroke at low opacity.
+  // paper, not a full background fill). Unselected chips are visually
+  // INVISIBLE — the prose reads as normal text — so the page stays calm
+  // until the user is actually marking something. Hovering reveals the
+  // stroke at low opacity so the affordance is still discoverable.
   return (
     <button
       type="button"
@@ -588,14 +590,13 @@ function BranchChip({
       title={on ? `Marked: ${term} (tap to clear)` : `Mark: ${term}`}
       style={{
         display: 'inline',
-        padding: '0 1px',
+        padding: 0,
         margin: 0,
         background: on
           ? 'linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.75) 22%, rgba(252, 211, 64, 0.75) 92%, transparent 92%)'
           : 'transparent',
         border: 'none',
         borderRadius: 0,
-        borderBottom: on ? 'none' : '1px dotted rgba(0,0,0,0.28)',
         color: 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
@@ -603,7 +604,7 @@ function BranchChip({
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
-        transition: 'background 140ms, border-color 140ms',
+        transition: 'background 140ms',
       }}
     >
       {term}

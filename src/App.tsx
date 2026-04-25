@@ -878,13 +878,13 @@ export function App() {
         .river-input-wrap ::-webkit-scrollbar { display: none; }
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
-        /* Inline chip — marker / highlighter metaphor. Unselected blends in
-           with a soft dotted underline; hovering previews the stroke at low
-           opacity so you can feel where the marker would land. Selected
-           styling is inline (translucent yellow stroke). */
+        /* Inline chip — marker / highlighter metaphor. Unselected chips are
+           invisible: the prose reads as normal text, no dotted lines or
+           pill shapes. Hovering previews the stroke at low opacity so the
+           affordance is still discoverable. Selected styling is inline
+           (translucent yellow stroke). */
         .river-chip:not(.on):hover {
           background: linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.30) 22%, rgba(252, 211, 64, 0.30) 92%, transparent 92%) !important;
-          border-bottom-color: rgba(0,0,0,0.55) !important;
         }
         .tl-html-container button,
         .tl-html-container textarea,

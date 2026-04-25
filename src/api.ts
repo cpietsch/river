@@ -132,3 +132,51 @@ export async function streamGenerate(
   }
   return full;
 }
+
+/**
+ * Streams a navigational summary of the conversation graph. The server
+ * renders every card as text and asks the main model to produce a 2-paragraph
+ * map; card references in the prose use `[card:shape:xxx]` syntax which the
+ * client parses into clickable affordances.
+ */
+export async function streamSummarize(
+  graph: GraphSnapshot,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch('/api/summarize', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ graph }),
+    signal,
+  });
+  if (!res.ok || !res.body) throw new Error(`summarize failed ${res.status}`);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      try {
+        const parsed = JSON.parse(trimmed.slice(5).trim());
+        if (parsed.type === 'delta' && typeof parsed.text === 'string') {
+          full += parsed.text;
+          onDelta(parsed.text);
+        } else if (parsed.type === 'error') {
+          throw new Error(String(parsed.message ?? 'summarize error'));
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith('summarize error')) throw err;
+      }
+    }
+  }
+  return full;
+}

@@ -18,6 +18,7 @@ import {
   fetchAgentPredictions,
   logEvent,
   streamGenerate,
+  streamSummarize,
   type ChatMessage,
   type AgentPrediction,
   type GraphSnapshot,
@@ -57,6 +58,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+  const [mapText, setMapText] = useState<string | null>(null);
+  const [mapBusy, setMapBusy] = useState(false);
 
   // Precache toggle: when on, every chip / presumption fires a background
   // main-model call so clicks land instantly. Cache key = `${parentId}::${prompt}`.
@@ -579,6 +582,54 @@ export function App() {
     [activeId],
   );
 
+  const panToCard = useCallback((id: TurnId) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const shape = editor.getShape(id) as unknown as CardShape | undefined;
+    if (!shape) return;
+    editor.centerOnPoint(
+      { x: shape.x + CARD_WIDTH / 2, y: shape.y + shape.props.h / 2 },
+      SMOOTH_CAMERA,
+    );
+  }, []);
+
+  const openMap = useCallback(async () => {
+    if (mapBusy) return;
+    const snapshot = buildGraphSnapshot();
+    const turnCount = Object.keys(snapshot.turns).length;
+    if (turnCount === 0) return;
+    logEvent('client.open_map', { turnCount });
+    setMapText('');
+    setMapBusy(true);
+    try {
+      let buffer = '';
+      await streamSummarize(snapshot, (delta) => {
+        buffer += delta;
+        setMapText(buffer);
+      });
+    } catch (err) {
+      setMapText(`[error: ${(err as Error).message}]`);
+    } finally {
+      setMapBusy(false);
+    }
+  }, [mapBusy, buildGraphSnapshot]);
+
+  const closeMap = useCallback(() => {
+    setMapText(null);
+    setMapBusy(false);
+  }, []);
+
+  const onMapCardClick = useCallback(
+    (id: TurnId) => {
+      logEvent('client.map_jump', { id });
+      closeMap();
+      // tldraw camera animations only apply once the modal isn't intercepting
+      // pointer events; defer one frame so the centerOnPoint isn't pre-empted.
+      requestAnimationFrame(() => panToCard(id));
+    },
+    [closeMap, panToCard],
+  );
+
   const startNew = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -883,6 +934,32 @@ export function App() {
 
         <button
           type="button"
+          onClick={openMap}
+          disabled={mapBusy}
+          aria-label="Show conversation map"
+          data-testid="open-map"
+          title="Ask the model to summarize the canvas. Card references in the summary become clickable affordances that pan to the card."
+          style={{
+            ...toolbarBtn,
+            color: mapBusy ? '#aaa' : '#111',
+            cursor: mapBusy ? 'default' : 'pointer',
+            opacity: mapBusy ? 0.6 : 1,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M9 4l-6 2v14l6-2 6 2 6-2V4l-6 2-6-2zM9 4v14M15 6v14"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          map
+        </button>
+
+        <button
+          type="button"
           onClick={() => setPrecacheEnabled((v) => !v)}
           aria-label="Toggle pre-caching of branch responses"
           data-testid="toggle-precache"
@@ -944,6 +1021,16 @@ export function App() {
         </div>
       )}
 
+
+      {/* ─── Map overlay (semantic navigation) ─── */}
+      {mapText !== null && (
+        <MapOverlay
+          text={mapText}
+          busy={mapBusy}
+          onClose={closeMap}
+          onCardClick={onMapCardClick}
+        />
+      )}
 
       {/* ─── Custom context menu ─── */}
       {ctxMenu && (
@@ -1020,6 +1107,167 @@ const toolbarBtn: React.CSSProperties = {
   WebkitTapHighlightColor: 'transparent',
   minHeight: 40,
 };
+
+/* ─── Map overlay (semantic navigation) ─── */
+
+// Card references in the prose use `[card:shape:xxx]` syntax. Split the text
+// into alternating prose / button segments so we can render the buttons
+// inline. Use a global, sticky regex; tldraw shape ids contain only a-zA-Z0-9
+// after the `shape:` prefix.
+const CARD_REF_RX = /\[card:(shape:[A-Za-z0-9_-]+)\]/g;
+
+function MapOverlay({
+  text,
+  busy,
+  onClose,
+  onCardClick,
+}: {
+  text: string;
+  busy: boolean;
+  onClose: () => void;
+  onCardClick: (id: TurnId) => void;
+}) {
+  // Hit Escape to close. Modal pattern — single keydown listener while open.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  // Parse the text into prose + card-ref segments. While streaming, a partial
+  // marker like "[card:shape:abc" at the tail is left as plain text — it'll
+  // resolve once the closing ']' arrives.
+  const turns = useConversation((s) => s.turns);
+  const segments = useMemo(() => {
+    const out: Array<
+      { kind: 'text'; value: string } | { kind: 'ref'; id: TurnId; valid: boolean }
+    > = [];
+    let lastIndex = 0;
+    CARD_REF_RX.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CARD_REF_RX.exec(text))) {
+      if (m.index > lastIndex) {
+        out.push({ kind: 'text', value: text.slice(lastIndex, m.index) });
+      }
+      const id = m[1] as TurnId;
+      out.push({ kind: 'ref', id, valid: !!turns[id] });
+      lastIndex = m.index + m[0].length;
+    }
+    if (lastIndex < text.length) {
+      out.push({ kind: 'text', value: text.slice(lastIndex) });
+    }
+    return out;
+  }, [text, turns]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Conversation map"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(20, 18, 14, 0.42)',
+        backdropFilter: 'blur(2px)',
+        zIndex: 2000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom))',
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: 640,
+          width: '100%',
+          maxHeight: '100%',
+          overflowY: 'auto',
+          background: '#fbfaf6',
+          border: '1px solid #1a1a1a',
+          borderRadius: 14,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.24)',
+          padding: '22px 24px 20px',
+          fontFamily: '"Source Serif 4", Georgia, serif',
+          fontSize: 16.5,
+          lineHeight: 1.55,
+          color: '#1a1a1a',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: 14,
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontSize: 12,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            color: '#6b6660',
+          }}
+        >
+          <span>map of this canvas{busy ? ' · streaming' : ''}</span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close map"
+            style={{
+              border: 'none',
+              background: 'none',
+              padding: 4,
+              cursor: 'pointer',
+              color: '#6b6660',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div style={{ whiteSpace: 'pre-wrap' }}>
+          {segments.map((seg, i) =>
+            seg.kind === 'text' ? (
+              <span key={i}>{seg.value}</span>
+            ) : (
+              <button
+                key={i}
+                type="button"
+                disabled={!seg.valid}
+                onClick={() => seg.valid && onCardClick(seg.id)}
+                title={seg.valid ? 'Pan to this card' : 'Card no longer exists'}
+                style={{
+                  display: 'inline',
+                  padding: '1px 8px',
+                  margin: '0 1px',
+                  background: seg.valid ? '#2e6ecf' : '#cccccc',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 999,
+                  font: 'inherit',
+                  fontSize: '0.88em',
+                  cursor: seg.valid ? 'pointer' : 'not-allowed',
+                  WebkitTapHighlightColor: 'transparent',
+                  verticalAlign: 'baseline',
+                  lineHeight: 1.3,
+                }}
+              >
+                jump
+              </button>
+            ),
+          )}
+          {busy && <span className="river-cursor">▍</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ─── Custom context menu ─── */
 

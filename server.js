@@ -137,6 +137,25 @@ const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user migh
 
 const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
+// Navigational summary of the conversation tree. The frontend opens this in a
+// modal overlay; card references in the prose are parsed back into clickable
+// buttons that pan the camera to the card. The exact \`[card:shape:xxx]\`
+// syntax is load-bearing — the parser keys off it.
+const NAV_SYSTEM = `You are producing a navigational map of an ongoing conversation rendered as cards on an infinite canvas.
+
+You will receive the full conversation graph. Each card has:
+- an id like "shape:abc123"
+- a role (user or assistant)
+- a parentId (or null for the root)
+- the content
+
+Write 2 short paragraphs (60-180 words total, separated by a blank line) that help the user re-find their own thinking:
+- Identify the main thread, any branches, turning points, threads still open.
+- Reference specific cards inline using the EXACT syntax: [card:shape:abc123]. The UI renders these as clickable buttons that pan to the card. Reference 3-6 cards across the response.
+- Voice: speak to the user as a guide ("you started with…", "you branched here…"). Past tense for prior turns.
+
+NO bullet lists, NO headers, NO code fences, NO links. Plain prose.`;
+
 /**
  * Build the kickoff user-message body that the Managed Agent session sees.
  * The conversation is a tree client-side, so we don't keep a long-lived
@@ -508,6 +527,74 @@ app.post('/api/agents', async (req, res) => {
     });
     console.error('agents failed:', err?.message);
     res.json({ predictions: [] });
+  }
+});
+
+app.post('/api/summarize', async (req, res) => {
+  const { graph = null } = req.body ?? {};
+  const turns = graph?.turns ?? {};
+  const turnList = Object.values(turns);
+  if (turnList.length === 0) {
+    res.status(400).json({ error: 'graph empty' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  // Render the graph as one user message. The summary doesn't need tools or
+  // memory — every card is already in the snapshot. One-shot Messages call
+  // is faster + cheaper than spinning up a Managed Agent session.
+  const rendered = turnList
+    .map(
+      (t) =>
+        `[${t.id}] role=${t.role} parent=${t.parentId ?? 'none'}\n${(t.content ?? '').trim()}`,
+    )
+    .join('\n\n---\n\n');
+
+  const startedAt = Date.now();
+  logEvent('summarize.start', { turnCount: turnList.length });
+  try {
+    const stream = await anthropic.messages.stream({
+      model: MAIN_MODEL,
+      max_tokens: 600,
+      system: NAV_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Here is the conversation graph:\n\n${rendered}\n\nWrite the navigational map.`,
+        },
+      ],
+    });
+    let total = 0;
+    for await (const event of stream) {
+      if (
+        event.type === 'content_block_delta' &&
+        event.delta?.type === 'text_delta'
+      ) {
+        const t = event.delta.text;
+        total += t.length;
+        res.write(`data: ${JSON.stringify({ type: 'delta', text: t })}\n\n`);
+      }
+    }
+    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    logEvent('summarize.end', {
+      durationMs: Date.now() - startedAt,
+      chars: total,
+      turnCount: turnList.length,
+    });
+  } catch (err) {
+    logEvent('summarize.error', {
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
+    res.write(
+      `data: ${JSON.stringify({ type: 'error', message: String(err?.message ?? err) })}\n\n`,
+    );
+  } finally {
+    res.end();
   }
 });
 

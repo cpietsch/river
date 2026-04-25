@@ -85,21 +85,42 @@ export type GraphSnapshot = { turns: Record<string, GraphSnapshotTurn> };
 
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
- * returns the full concatenated text once the stream finishes.
+ * `onSessionId` fires once with the session id (existing or newly minted)
+ * before any deltas, so the caller can persist it for the next turn.
+ * Returns the full concatenated text once the stream finishes.
  */
 export async function streamGenerate(
   input: string,
   history: ChatMessage[],
   onDelta: (text: string) => void,
-  signal?: AbortSignal,
-  emphasized: string[] = [],
-  userContext: string[] = [],
-  graph: GraphSnapshot | null = null,
+  opts: {
+    signal?: AbortSignal;
+    emphasized?: string[];
+    userContext?: string[];
+    graph?: GraphSnapshot | null;
+    sessionId?: string | null;
+    onSessionId?: (id: string) => void;
+  } = {},
 ): Promise<string> {
+  const {
+    signal,
+    emphasized = [],
+    userContext = [],
+    graph = null,
+    sessionId = null,
+    onSessionId,
+  } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input, history, emphasized, userContext, graph }),
+    body: JSON.stringify({
+      input,
+      history,
+      emphasized,
+      userContext,
+      graph,
+      sessionId,
+    }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`generate failed ${res.status}`);
@@ -122,6 +143,11 @@ export async function streamGenerate(
         if (parsed.type === 'delta' && typeof parsed.text === 'string') {
           full += parsed.text;
           onDelta(parsed.text);
+        } else if (
+          parsed.type === 'session' &&
+          typeof parsed.sessionId === 'string'
+        ) {
+          onSessionId?.(parsed.sessionId);
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));
         }
@@ -131,6 +157,20 @@ export async function streamGenerate(
     }
   }
   return full;
+}
+
+/**
+ * Best-effort delete of the project's Managed Agent session. Called on
+ * "+ new" so the abandoned canvas's session log doesn't sit forever.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  try {
+    await fetch(`/api/session/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // ignore
+  }
 }
 
 // Card-label batch input. The client only sends cards lacking labels.

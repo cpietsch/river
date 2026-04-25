@@ -262,6 +262,7 @@ app.post('/api/generate', async (req, res) => {
     emphasized = [],
     userContext = [],
     graph = null,
+    sessionId: incomingSessionId = null,
   } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
@@ -285,40 +286,63 @@ app.post('/api/generate', async (req, res) => {
     emphasizedCount: Array.isArray(emphasized) ? emphasized.length : 0,
     userContextCount: Array.isArray(userContext) ? userContext.length : 0,
     graphSize: graph?.turns ? Object.keys(graph.turns).length : 0,
+    sessionReused: !!incomingSessionId,
   });
 
-  let session;
-  let sessionId = null;
+  let sessionId = incomingSessionId;
   let totalChars = 0;
   let toolUses = 0;
   let customToolUses = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   try {
-    const sessionParams = {
-      agent: AGENT_ID,
-      environment_id: ENV_ID,
-      title: input.trim().slice(0, 60),
-    };
-    if (MEMORY_STORE_ID) {
-      sessionParams.resources = [
-        {
-          type: 'memory_store',
-          memory_store_id: MEMORY_STORE_ID,
-          access: 'read_write',
-          instructions:
-            'Long-term memory across all river-2 conversations. Read first; write durably useful learnings (preferences, recurring topics). Skip one-off chatter.',
-        },
-      ];
+    // Reuse the project's session if the client passed one (and it still
+    // exists). Otherwise mint a fresh session and tell the client about it
+    // via the first SSE event so it can persist the id.
+    if (sessionId) {
+      try {
+        await anthropic.beta.sessions.retrieve(sessionId);
+      } catch (err) {
+        logEvent('generate.session_lost', {
+          sessionId,
+          message: err?.message,
+        });
+        sessionId = null;
+      }
     }
-    session = await anthropic.beta.sessions.create(sessionParams);
-    sessionId = session.id;
-    logEvent('generate.session_created', { sessionId });
+    if (!sessionId) {
+      const sessionParams = {
+        agent: AGENT_ID,
+        environment_id: ENV_ID,
+        title: input.trim().slice(0, 60),
+      };
+      if (MEMORY_STORE_ID) {
+        sessionParams.resources = [
+          {
+            type: 'memory_store',
+            memory_store_id: MEMORY_STORE_ID,
+            access: 'read_write',
+            instructions:
+              'Long-term memory across all river-2 conversations. Read first; write durably useful learnings (preferences, recurring topics). Skip one-off chatter.',
+          },
+        ];
+      }
+      const created = await anthropic.beta.sessions.create(sessionParams);
+      sessionId = created.id;
+      logEvent('generate.session_created', { sessionId });
+    }
+    // Tell the client the session id (it may be the same id they sent, or a
+    // freshly minted one). The store persists it so subsequent turns reuse.
+    res.write(
+      `data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`,
+    );
 
     // Stream-first: open the SSE stream BEFORE sending the kickoff so we
     // don't miss early events. (See `shared/managed-agents-events.md` →
     // Stream-first ordering — the stream only delivers events emitted
     // after it opens.)
-    const streamPromise = anthropic.beta.sessions.events.stream(session.id);
-    await anthropic.beta.sessions.events.send(session.id, {
+    const streamPromise = anthropic.beta.sessions.events.stream(sessionId);
+    await anthropic.beta.sessions.events.send(sessionId, {
       events: [
         {
           type: 'user.message',
@@ -353,6 +377,14 @@ app.post('/api/generate', async (req, res) => {
           tool: event.name,
         });
       }
+      // Per-model-request token usage. Aggregated for end-of-turn telemetry.
+      if (event.type === 'span.model_request_end') {
+        const usage = event.usage ?? event.model_usage ?? null;
+        if (usage) {
+          inputTokens += usage.input_tokens ?? 0;
+          outputTokens += usage.output_tokens ?? 0;
+        }
+      }
       // Custom tool calls — resolve them locally against the graph snapshot
       // the client sent and reply with user.custom_tool_result. The session
       // goes idle (requires_action) until we send the result, then resumes.
@@ -365,7 +397,7 @@ app.post('/api/generate', async (req, res) => {
         });
         const result = resolveGraphTool(event.name, event.input, graph);
         try {
-          await anthropic.beta.sessions.events.send(session.id, {
+          await anthropic.beta.sessions.events.send(sessionId, {
             events: [
               {
                 type: 'user.custom_tool_result',
@@ -410,6 +442,8 @@ app.post('/api/generate', async (req, res) => {
       responseChars: totalChars,
       toolUses,
       customToolUses,
+      inputTokens,
+      outputTokens,
     });
   } catch (err) {
     logEvent('generate.error', {
@@ -422,17 +456,33 @@ app.post('/api/generate', async (req, res) => {
     );
   } finally {
     res.end();
-    // Best-effort cleanup. The post-idle status-write race (see
-    // `shared/managed-agents-client-patterns.md` Pattern 6) means delete
-    // can occasionally 400 if the session is still running — swallow that;
-    // sessions auto-archive eventually.
-    if (session) {
-      try {
-        await anthropic.beta.sessions.delete(session.id);
-      } catch (_) {
-        // ignore
-      }
-    }
+    // No session.delete — the project owns the session for the canvas's
+    // lifetime. The client clears it on "+ new" (which calls
+    // DELETE /api/session/:id below).
+  }
+});
+
+// Best-effort session deletion. Used by the client when the user starts a
+// new canvas — the prior project session and all its event history are no
+// longer referenced. 30-day container-checkpoint TTL means dormant sessions
+// also lose container state, but event history persists until deleted.
+app.delete('/api/session/:id', async (req, res) => {
+  const id = req.params.id;
+  if (!id || !id.startsWith('ses_')) {
+    res.status(400).json({ error: 'invalid session id' });
+    return;
+  }
+  try {
+    await anthropic.beta.sessions.delete(id);
+    logEvent('session.deleted', { sessionId: id });
+    res.json({ ok: true });
+  } catch (err) {
+    logEvent('session.delete_failed', {
+      sessionId: id,
+      message: String(err?.message ?? err),
+    });
+    // 200 anyway: best-effort, don't block the client UX.
+    res.json({ ok: false, message: String(err?.message ?? err) });
   }
 });
 

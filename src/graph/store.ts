@@ -16,8 +16,15 @@ interface NewTurnInit {
 
 interface ConversationStore {
   turns: Record<TurnId, Turn>;
+  // Persistent Managed Agent session for the whole project (canvas). All
+  // turns across all branches share this one session; the brain's memory
+  // store + container state evolve over the canvas's lifetime. Cleared on
+  // "+ new"; minted lazily on the first /api/generate call that doesn't
+  // have one. Multi-project: this becomes a per-project field.
+  projectSessionId: string | null;
 
   // Mutations
+  setProjectSessionId: (id: string | null) => void;
   createTurn: (init: NewTurnInit) => TurnId;
   setContent: (
     id: TurnId,
@@ -47,6 +54,9 @@ export const useConversation = create<ConversationStore>()(
   persist(
     (set, get) => ({
   turns: {},
+  projectSessionId: null,
+
+  setProjectSessionId: (id) => set({ projectSessionId: id }),
 
   createTurn: (init) => {
     const id: TurnId = init.id ?? createShapeId();
@@ -205,7 +215,7 @@ export const useConversation = create<ConversationStore>()(
     return Array.from(toRemove);
   },
 
-  reset: () => set({ turns: {} }),
+  reset: () => set({ turns: {}, projectSessionId: null }),
 
   getTurn: (id) => (id ? get().turns[id] : undefined),
 
@@ -252,7 +262,10 @@ export const useConversation = create<ConversationStore>()(
       name: 'river-2-graph',
       storage: createJSONStorage(() => localStorage),
       // Only persist the data, not the action functions.
-      partialize: (state) => ({ turns: state.turns }),
+      partialize: (state) => ({
+        turns: state.turns,
+        projectSessionId: state.projectSessionId,
+      }),
     },
   ),
 );

@@ -15,6 +15,7 @@ import {
 } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
+  deleteSession,
   fetchAgentPredictions,
   fetchLabels,
   logEvent,
@@ -342,10 +343,19 @@ export function App() {
                 }
               }
             },
-            undefined,
-            emphasized,
-            userContext,
-            buildGraphSnapshot(),
+            {
+              emphasized,
+              userContext,
+              graph: buildGraphSnapshot(),
+              sessionId: useConversation.getState().projectSessionId,
+              onSessionId: (id) => {
+                if (
+                  useConversation.getState().projectSessionId !== id
+                ) {
+                  useConversation.getState().setProjectSessionId(id);
+                }
+              },
+            },
           );
           useConversation
             .getState()
@@ -606,9 +616,15 @@ export function App() {
   const startNew = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
+    const priorSession = useConversation.getState().projectSessionId;
     logEvent('client.start_new', {
       priorTurns: Object.keys(useConversation.getState().turns).length,
+      priorSession,
     });
+    // Best-effort: delete the prior project's Managed Agent session so its
+    // event log + container don't sit forever. Fire-and-forget — `reset()`
+    // clears the local id immediately regardless of network outcome.
+    if (priorSession) void deleteSession(priorSession);
     useConversation.getState().reset();
     const id = useConversation
       .getState()

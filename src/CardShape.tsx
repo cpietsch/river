@@ -333,6 +333,8 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     activePredictions,
     activeToggled,
     togglePrediction,
+    chipSelectionCount,
+    clearAllChipSelections,
   } = actions;
   // Send is enabled when there's typed input OR at least one selection
   // (toggled agent pill or selected inline chip on any ancestor) — any of
@@ -369,12 +371,11 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
         gap: 6,
       }}
     >
-      {/* Reflection pills — implicit assumptions surfaced in first-person.
-          Tap to toggle: each toggled pill becomes part of `userContext` on
-          the next /api/generate call. Multiple selections are supported.
-          Filled lavender = on, outline = off. Title attr exposes the full
-          sentence for hover. */}
-      {activePredictions.length > 0 && (
+      {/* Pill row — agent predictions (lavender / amber / teal) plus a
+          counter pill summarizing how many in-text chip selections are
+          active across the active chain. The counter pill is tappable;
+          tapping clears all in-text selections in one action. */}
+      {(activePredictions.length > 0 || chipSelectionCount > 0) && (
         <div
           style={{
             display: 'flex',
@@ -417,6 +418,51 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
               </button>
             );
           })}
+          {chipSelectionCount > 0 && (
+            <button
+              key="chip-count"
+              type="button"
+              title={`${chipSelectionCount} in-text selection${chipSelectionCount === 1 ? '' : 's'} — tap to clear`}
+              aria-label="Clear text selections"
+              onPointerDown={tap(() => clearAllChipSelections())}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '4px 10px',
+                background: '#2e6ecf',
+                border: '1px solid #2e6ecf',
+                color: '#fff',
+                borderRadius: 999,
+                font: 'inherit',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                WebkitTapHighlightColor: 'transparent',
+                lineHeight: 1.4,
+                whiteSpace: 'nowrap',
+                transition: 'background 120ms',
+              }}
+            >
+              {chipSelectionCount} selected
+              <span
+                aria-hidden
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: 14,
+                  height: 14,
+                  borderRadius: 999,
+                  background: 'rgba(255,255,255,0.2)',
+                  fontSize: 11,
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </span>
+            </button>
+          )}
         </div>
       )}
 

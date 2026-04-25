@@ -683,21 +683,35 @@ export function App() {
     () => new Set(activeToggledLabels),
     [activeToggledLabels],
   );
-  // Reactive: any chip selected on any ancestor of activeId. Walks once per
-  // store change; cheap because the chain is short and selection is rare.
-  const hasChipSelections = useConversation((s) => {
-    if (!activeId) return false;
+  // Reactive: total count of selected chips across activeId's ancestors.
+  // Walks the chain once per store change; cheap because the chain is short.
+  const chipSelectionCount = useConversation((s) => {
+    if (!activeId) return 0;
+    let total = 0;
     let cur: TurnId | null = activeId;
     const seen = new Set<TurnId>();
     while (cur && !seen.has(cur)) {
       seen.add(cur);
       const t: import('./graph/types').Turn | undefined = s.turns[cur];
       if (!t) break;
-      if ((t.meta.chipsSelected ?? []).length > 0) return true;
+      total += (t.meta.chipsSelected ?? []).length;
       cur = t.parentId;
     }
-    return false;
+    return total;
   });
+  const hasChipSelections = chipSelectionCount > 0;
+
+  // Clear every selected chip across the active chain. Used when the user
+  // taps the counter pill in the chatbox row.
+  const clearAllChipSelections = useCallback(() => {
+    if (!activeId) return;
+    const ancestors = useConversation.getState().getAncestors(activeId);
+    for (const t of ancestors) {
+      if ((t.meta.chipsSelected ?? []).length > 0) {
+        useConversation.getState().clearChipsSelected(t.id);
+      }
+    }
+  }, [activeId]);
 
   return (
     <CardActionsContext.Provider
@@ -711,6 +725,8 @@ export function App() {
         activePredictions,
         activeToggled,
         hasChipSelections,
+        chipSelectionCount,
+        clearAllChipSelections,
         input,
         setInput,
         onInputChange,

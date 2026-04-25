@@ -17,6 +17,12 @@ export interface CardActions {
   // card. The send button uses this to enable empty-input submission when
   // chips alone are the user's intent.
   hasChipSelections: boolean;
+  // Total number of selected inline chips across the active chain's
+  // ancestors — surfaced as a counter pill in the input row so the user
+  // sees their text selections at a glance.
+  chipSelectionCount: number;
+  // Clear every selected chip across the active chain's ancestors.
+  clearAllChipSelections: () => void;
   branchFrom: (turnId: TLShapeId) => void;
   // Toggle an inline [[term]] chip's selected state in-place on its card.
   // On submit, every selected chip across the active chain's ancestors

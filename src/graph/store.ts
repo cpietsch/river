@@ -14,16 +14,33 @@ interface NewTurnInit {
   meta?: TurnMeta;
 }
 
-interface ConversationStore {
+// Snapshot of a prior canvas (project) the user has set aside. Held in
+// `archive[]` so the projects menu can list them and the user can resume
+// or delete each one. The session id is preserved — resuming reattaches
+// to the same Managed Agent session, so the brain's memory + container
+// state pick up where it left off.
+export interface ArchivedProject {
+  id: string;             // local id (proj_*) — distinct from sessionId
+  name: string;
+  sessionId: string | null;
   turns: Record<TurnId, Turn>;
-  // Persistent Managed Agent session for the whole project (canvas). All
-  // turns across all branches share this one session; the brain's memory
-  // store + container state evolve over the canvas's lifetime. Cleared on
-  // "+ new"; minted lazily on the first /api/generate call that doesn't
-  // have one. Multi-project: this becomes a per-project field.
-  projectSessionId: string | null;
+  savedAt: number;
+}
 
-  // Mutations
+interface ConversationStore {
+  // Active canvas working set.
+  turns: Record<TurnId, Turn>;
+  // Persistent Managed Agent session for the active project. All turns
+  // across all branches share this one session; the brain's memory store +
+  // container state evolve over the canvas's lifetime. Multi-project: each
+  // ArchivedProject holds its own sessionId — resuming swaps it in here.
+  projectSessionId: string | null;
+  // Prior projects the user has stashed via "+ new canvas". Most-recent
+  // first. Manual delete only — auto-delete would orphan sessions the user
+  // may want to return to.
+  archive: ArchivedProject[];
+
+  // Mutations — active canvas
   setProjectSessionId: (id: string | null) => void;
   createTurn: (init: NewTurnInit) => TurnId;
   setContent: (
@@ -42,6 +59,12 @@ interface ConversationStore {
   removeSubtree: (rootId: TurnId) => TurnId[];
   reset: () => void;
 
+  // Mutations — project lifecycle
+  archiveAndReset: () => void;            // stash active to archive, blank slate
+  resumeArchived: (archiveId: string) => boolean; // swap active <-> archived
+  deleteArchived: (archiveId: string) => void;    // returns sessionId so caller can DELETE it server-side
+  renameArchived: (archiveId: string, name: string) => void;
+
   // Selectors (read directly from current state — call via getState() in
   // imperative code, or from useConversation() in React).
   getTurn: (id: TurnId | null | undefined) => Turn | undefined;
@@ -50,11 +73,28 @@ interface ConversationStore {
   getDescendants: (id: TurnId) => Turn[]; // BFS from id, includes self
 }
 
+function makeProjectId(): string {
+  return 'proj_' + Math.random().toString(36).slice(2, 10);
+}
+
+// Friendly project label, derived from the first user turn with content.
+// "untitled" when the canvas is blank. Used at archive time so the projects
+// menu has something to show; user can rename via renameArchived later.
+export function deriveProjectName(turns: Record<TurnId, Turn>): string {
+  const firstUser = Object.values(turns).find(
+    (t) => t.role === 'user' && t.content.trim().length > 0,
+  );
+  if (!firstUser) return 'untitled canvas';
+  const raw = firstUser.content.replace(/\s+/g, ' ').trim();
+  return raw.length > 60 ? raw.slice(0, 60).trimEnd() + '…' : raw;
+}
+
 export const useConversation = create<ConversationStore>()(
   persist(
     (set, get) => ({
   turns: {},
   projectSessionId: null,
+  archive: [],
 
   setProjectSessionId: (id) => set({ projectSessionId: id }),
 
@@ -217,6 +257,82 @@ export const useConversation = create<ConversationStore>()(
 
   reset: () => set({ turns: {}, projectSessionId: null }),
 
+  // Stash the active canvas onto the archive list and clear active state. No
+  // session deletion — the user may resume this project later. Empty active
+  // canvases (no content, no session) are dropped instead of archived to
+  // avoid spamming the menu with placeholders.
+  archiveAndReset: () => {
+    set((s) => {
+      const hasContent = Object.values(s.turns).some(
+        (t) => t.content.trim().length > 0,
+      );
+      const worth = hasContent || s.projectSessionId !== null;
+      const nextArchive = worth
+        ? [
+            {
+              id: makeProjectId(),
+              name: deriveProjectName(s.turns),
+              sessionId: s.projectSessionId,
+              turns: s.turns,
+              savedAt: Date.now(),
+            },
+            ...s.archive,
+          ]
+        : s.archive;
+      return {
+        turns: {},
+        projectSessionId: null,
+        archive: nextArchive,
+      };
+    });
+  },
+
+  // Resume an archived project: stash the current active canvas onto the
+  // archive (so jumping away doesn't lose it) and swap the chosen archived
+  // project into active. Returns false if the id wasn't found.
+  resumeArchived: (archiveId) => {
+    const cur = get();
+    const target = cur.archive.find((a) => a.id === archiveId);
+    if (!target) return false;
+    const remaining = cur.archive.filter((a) => a.id !== archiveId);
+    const hasContent = Object.values(cur.turns).some(
+      (t) => t.content.trim().length > 0,
+    );
+    const worth = hasContent || cur.projectSessionId !== null;
+    const nextArchive = worth
+      ? [
+          {
+            id: makeProjectId(),
+            name: deriveProjectName(cur.turns),
+            sessionId: cur.projectSessionId,
+            turns: cur.turns,
+            savedAt: Date.now(),
+          },
+          ...remaining,
+        ]
+      : remaining;
+    set({
+      turns: target.turns,
+      projectSessionId: target.sessionId,
+      archive: nextArchive,
+    });
+    return true;
+  },
+
+  deleteArchived: (archiveId) => {
+    set((s) => ({
+      archive: s.archive.filter((a) => a.id !== archiveId),
+    }));
+  },
+
+  renameArchived: (archiveId, name) => {
+    set((s) => ({
+      archive: s.archive.map((a) =>
+        a.id === archiveId ? { ...a, name: name.trim() || a.name } : a,
+      ),
+    }));
+  },
+
   getTurn: (id) => (id ? get().turns[id] : undefined),
 
   getChildren: (id) => {
@@ -265,6 +381,7 @@ export const useConversation = create<ConversationStore>()(
       partialize: (state) => ({
         turns: state.turns,
         projectSessionId: state.projectSessionId,
+        archive: state.archive,
       }),
     },
   ),

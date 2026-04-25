@@ -24,7 +24,7 @@ import {
   type AgentPrediction,
   type GraphSnapshot,
 } from './api';
-import { useConversation } from './graph/store';
+import { useConversation, deriveProjectName } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
 import { syncStoreToTldraw } from './graph/sync';
 import { extractSpans } from './graph/extractSpans';
@@ -60,7 +60,10 @@ export function App() {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const labelInFlightRef = useRef(false);
+  const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
+  const archivedProjects = useConversation((s) => s.archive);
 
   // Bridge the store onto tldraw. Whenever the conversation graph changes,
   // syncer reflects it onto the canvas. Structural changes (turn created /
@@ -613,6 +616,18 @@ export function App() {
     [closeMap, panToCard],
   );
 
+  // Wipe tldraw shapes so the syncer rebuilds from the freshly-swapped
+  // store turns. Used when starting a new canvas, resuming an archived one,
+  // or otherwise replacing the active turn set wholesale.
+  const repaintCanvas = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const ids = editor.getCurrentPageShapes().map((s) => s.id);
+    if (ids.length > 0) editor.deleteShapes(ids);
+    syncStoreToTldraw(editor);
+    relayoutAll(editor);
+  }, []);
+
   const startNew = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -621,21 +636,76 @@ export function App() {
       priorTurns: Object.keys(useConversation.getState().turns).length,
       priorSession,
     });
-    // Best-effort: delete the prior project's Managed Agent session so its
-    // event log + container don't sit forever. Fire-and-forget — `reset()`
-    // clears the local id immediately regardless of network outcome.
-    if (priorSession) void deleteSession(priorSession);
-    useConversation.getState().reset();
+    // Archive the current canvas — preserves its session so the user can
+    // jump back into it from the projects menu. Deletion is manual.
+    useConversation.getState().archiveAndReset();
     const id = useConversation
       .getState()
       .createTurn({ role: 'user', parentId: null });
     setActiveId(id);
     setInput(START_SEED);
+    repaintCanvas();
     editor.centerOnPoint(
       { x: CARD_WIDTH / 2, y: CARD_HEIGHT_MIN / 2 + 90 },
       SMOOTH_CAMERA,
     );
+  }, [repaintCanvas]);
+
+  const resumeProject = useCallback(
+    (archiveId: string) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const ok = useConversation.getState().resumeArchived(archiveId);
+      if (!ok) return;
+      logEvent('client.resume_project', { archiveId });
+      // Re-seat active on the most recent empty user turn in the resumed
+      // canvas (mirrors handleMount logic), or the latest turn otherwise.
+      const turns = Object.values(useConversation.getState().turns);
+      const lastEmpty = [...turns]
+        .reverse()
+        .find((t) => t.role === 'user' && t.content.trim() === '');
+      const fallback = turns[turns.length - 1];
+      const targetId = lastEmpty?.id ?? fallback?.id ?? null;
+      setActiveId(targetId);
+      setInput('');
+      repaintCanvas();
+      if (targetId) {
+        const shape = editor.getShape(targetId) as unknown as
+          | CardShape
+          | undefined;
+        if (shape) {
+          editor.centerOnPoint(
+            { x: shape.x + CARD_WIDTH / 2, y: shape.y + shape.props.h / 2 },
+            SMOOTH_CAMERA,
+          );
+        }
+      }
+    },
+    [repaintCanvas],
+  );
+
+  // Manual deletion: remove the archived project from the store and
+  // best-effort DELETE its Managed Agent session server-side so the event
+  // log + container don't linger.
+  const deleteArchivedProject = useCallback((archiveId: string) => {
+    const target = useConversation
+      .getState()
+      .archive.find((a) => a.id === archiveId);
+    if (!target) return;
+    if (target.sessionId) void deleteSession(target.sessionId);
+    useConversation.getState().deleteArchived(archiveId);
+    logEvent('client.delete_project', {
+      archiveId,
+      hadSession: !!target.sessionId,
+    });
   }, []);
+
+  const renameArchivedProject = useCallback(
+    (archiveId: string, name: string) => {
+      useConversation.getState().renameArchived(archiveId, name);
+    },
+    [],
+  );
 
   function onInputChange(text: string): void {
     setInput(text);
@@ -778,18 +848,69 @@ export function App() {
           gap: 8,
         }}
       >
-        <button
-          type="button"
-          onClick={startNew}
-          aria-label="Start a new canvas"
-          data-testid="start-new"
-          style={toolbarBtn}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
-          </svg>
-          new
-        </button>
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            onClick={() => setProjectsOpen((o) => !o)}
+            aria-label="Switch project"
+            aria-expanded={projectsOpen}
+            data-testid="toggle-projects"
+            title="Switch between canvases (projects)."
+            style={{
+              ...toolbarBtn,
+              background: projectsOpen ? '#111' : '#fff',
+              color: projectsOpen ? '#fff' : '#111',
+              maxWidth: 220,
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M3 7h13l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7zM3 7V5a1 1 0 0 1 1-1h6l2 3"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span
+              style={{
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: 140,
+              }}
+            >
+              {activeProjectName}
+            </span>
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden
+              style={{ marginLeft: -2 }}
+            >
+              <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          {projectsOpen && (
+            <ProjectsMenu
+              activeName={activeProjectName}
+              archive={archivedProjects}
+              onClose={() => setProjectsOpen(false)}
+              onNew={() => {
+                setProjectsOpen(false);
+                startNew();
+              }}
+              onResume={(id) => {
+                setProjectsOpen(false);
+                resumeProject(id);
+              }}
+              onDelete={deleteArchivedProject}
+              onRename={renameArchivedProject}
+            />
+          )}
+        </div>
 
         <div style={{ position: 'relative' }}>
           <button
@@ -938,6 +1059,303 @@ const toolbarBtn: React.CSSProperties = {
   WebkitTapHighlightColor: 'transparent',
   minHeight: 40,
 };
+
+/* ─── Projects menu ─── */
+
+/**
+ * Dropdown anchored to the projects toolbar button. Top: "+ new canvas".
+ * Below: each archived project with click-to-resume and an inline ✕ to
+ * delete (with confirm). Per-row rename via dblclick on the title.
+ * Manual deletion only — auto-delete would orphan sessions the user may
+ * want to return to.
+ */
+function ProjectsMenu({
+  activeName,
+  archive,
+  onClose,
+  onNew,
+  onResume,
+  onDelete,
+  onRename,
+}: {
+  activeName: string;
+  archive: import('./graph/store').ArchivedProject[];
+  onClose: () => void;
+  onNew: () => void;
+  onResume: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (editingId) {
+          setEditingId(null);
+        } else {
+          onClose();
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose, editingId]);
+
+  const commitRename = () => {
+    if (editingId) {
+      onRename(editingId, draftName);
+      setEditingId(null);
+    }
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 1499 }}
+        aria-hidden
+      />
+      <div
+        role="menu"
+        aria-label="Projects"
+        style={{
+          position: 'absolute',
+          top: 'calc(100% + 6px)',
+          left: 0,
+          width: 280,
+          maxHeight: 'calc(100vh - 120px)',
+          overflowY: 'auto',
+          background: '#fff',
+          border: '1px solid rgba(26,26,26,0.14)',
+          borderRadius: 12,
+          boxShadow:
+            '0 10px 30px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06)',
+          padding: 4,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontSize: 13,
+          color: '#1a1a1a',
+          zIndex: 1500,
+        }}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onNew}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            width: '100%',
+            padding: '8px 10px',
+            background: 'none',
+            border: 'none',
+            borderRadius: 6,
+            font: 'inherit',
+            color: '#1a1a1a',
+            cursor: 'pointer',
+            textAlign: 'left',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = '#f3f2ee';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'none';
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+          </svg>
+          new canvas
+        </button>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '8px 10px',
+            color: '#6b6660',
+            background: '#f7f6f2',
+            borderRadius: 6,
+            margin: '4px 0',
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#2e6ecf',
+              flex: '0 0 auto',
+            }}
+          />
+          <span
+            style={{
+              flex: '1 1 auto',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+            title={activeName}
+          >
+            {activeName}
+          </span>
+          <span
+            style={{
+              fontSize: 10,
+              letterSpacing: 0.5,
+              textTransform: 'uppercase',
+              color: '#9a9590',
+            }}
+          >
+            active
+          </span>
+        </div>
+
+        {archive.length === 0 ? (
+          <div style={{ padding: '8px 10px', color: '#9a9590' }}>
+            no other canvases yet
+          </div>
+        ) : (
+          archive.map((p) => (
+            <div
+              key={p.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                paddingLeft: 4,
+                paddingRight: 2,
+                borderRadius: 6,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = '#f3f2ee';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'none';
+              }}
+            >
+              {editingId === p.id ? (
+                <input
+                  autoFocus
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') setEditingId(null);
+                  }}
+                  style={{
+                    flex: '1 1 auto',
+                    padding: '7px 8px',
+                    background: '#fff',
+                    border: '1px solid #2e6ecf',
+                    borderRadius: 5,
+                    font: 'inherit',
+                    fontSize: 13,
+                    color: '#1a1a1a',
+                    outline: 'none',
+                    minWidth: 0,
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onResume(p.id)}
+                  onDoubleClick={() => {
+                    setDraftName(p.name);
+                    setEditingId(p.id);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    flex: '1 1 auto',
+                    minWidth: 0,
+                    padding: '8px 6px',
+                    background: 'none',
+                    border: 'none',
+                    font: 'inherit',
+                    color: '#1a1a1a',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    WebkitTapHighlightColor: 'transparent',
+                  }}
+                  title={`${p.name}\n(double-click to rename)`}
+                >
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: p.sessionId ? '#1a1a1a' : '#cccccc',
+                      opacity: p.sessionId ? 0.55 : 1,
+                      flex: '0 0 auto',
+                    }}
+                  />
+                  <span
+                    style={{
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      flex: '1 1 auto',
+                      minWidth: 0,
+                    }}
+                  >
+                    {p.name}
+                  </span>
+                </button>
+              )}
+              <button
+                type="button"
+                aria-label={`Delete ${p.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm(`Delete "${p.name}" and its session?`)) {
+                    onDelete(p.id);
+                  }
+                }}
+                style={{
+                  flex: '0 0 auto',
+                  border: 'none',
+                  background: 'none',
+                  padding: 6,
+                  cursor: 'pointer',
+                  color: '#9a9590',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 4,
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = '#a04040';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = '#9a9590';
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </>
+  );
+}
 
 /* ─── Map menu (spatial mini-map) ─── */
 

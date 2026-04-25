@@ -889,13 +889,11 @@ export function App() {
         .river-input-wrap ::-webkit-scrollbar { display: none; }
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
-        /* DEBUG: dotted underline on every selectable span so we can see
-           exactly what the extractor caught. Hover lifts the chip into a
-           pill preview. Restore the marker / highlighter visual once
-           coverage looks right. */
+        /* Marker metaphor: chips are invisible by default, hover previews
+           the yellow stroke at low opacity so the affordance is
+           discoverable. Selection paints the full stroke (inline style). */
         .river-chip:not(.on):hover {
-          background: rgba(46, 110, 207, 0.08) !important;
-          border-bottom: 1px solid #2e6ecf !important;
+          background: linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.30) 22%, rgba(252, 211, 64, 0.30) 92%, transparent 92%) !important;
         }
         .tl-html-container button,
         .tl-html-container textarea,

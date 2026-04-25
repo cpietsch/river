@@ -573,34 +573,34 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // DEBUG visual (matches what the local extractor finds): blue pill when
-  // selected, dotted blue underline when not. Once span coverage feels
-  // right we restore the marker / highlighter visual. Default state is
-  // intentionally NOT invisible here — the dotted line shows which words
-  // the extractor caught.
+  // Marker / highlighter metaphor. Unselected chips are INVISIBLE (look
+  // identical to surrounding text) so the prose stays clean. Selected
+  // chips paint a translucent yellow stroke at every occurrence — tap one
+  // instance and every mention of the phrase lights up across the card.
   return (
     <button
       type="button"
       className={on ? 'river-chip on' : 'river-chip'}
       onPointerDown={tap(onClick)}
       aria-pressed={on}
-      title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
+      title={on ? `Marked: ${term} (tap to clear)` : `Mark: ${term}`}
       style={{
         display: 'inline',
-        padding: on ? '1px 8px' : '0 1px',
-        margin: '0 1px',
-        background: on ? '#2e6ecf' : 'transparent',
+        padding: 0,
+        margin: 0,
+        background: on
+          ? 'linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.75) 22%, rgba(252, 211, 64, 0.75) 92%, transparent 92%)'
+          : 'transparent',
         border: 'none',
-        borderRadius: on ? 999 : 0,
-        borderBottom: on ? 'none' : '1px dotted #2e6ecf',
-        color: on ? '#fff' : 'inherit',
+        borderRadius: 0,
+        color: 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
-        fontWeight: on ? 600 : 'inherit',
+        fontWeight: 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
-        transition: 'background 120ms, color 120ms, border-color 120ms',
+        transition: 'background 140ms',
       }}
     >
       {term}

@@ -40,11 +40,13 @@ app.use(express.json({ limit: '2mb' }));
 
 const MAIN_SYSTEM_BASE = `You are the voice in a river-metaphor chat interface rendered as cards on an infinite canvas.
 
-LENGTH: 2-5 sentences, 40-100 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.
+LENGTH: 3-6 sentences, 60-140 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.
 
-INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas in double brackets like [[this]]. Choose terms the reader might want to explore as its own branch. Keep each bracketed phrase short (1-4 words) and never nest brackets. The brackets render as tappable chips that spawn a new tributary in the canvas.`;
+INLINE SELECTION-CHIPS: Wrap 3 to 5 selectable phrases per response in [[double brackets]]. The reader taps chips to mark "ride this forward" — selected chips become context for their next message. Pick the most distinctive entities or concepts; an augmentation pass adds more chips afterward, so don't try to mark every phrase yourself. Each chip is 1-5 words; never nest brackets.`;
 
 const CHIP_QUESTIONS_SYSTEM = `You write the contextual question a reader would ask to dig deeper into each highlighted term in a card. The card's prose is given; the highlighted terms are listed. For each term, return one full-sentence question — anchored in the card's specific framing, not a generic "what is X" or "tell me more". Output ONLY a JSON object mapping term → question. No prose, no markdown fence. Example: {"NanoKVM": "how does NanoKVM differ from the Base in build quality and port layout?", "BMC chip": "why does the BMC chip choice dominate KVM-over-IP latency?"}`;
+
+const CHIPS_AUGMENT_SYSTEM = `You identify additional selectable phrases in a text. The reader can tap each one to bring it forward as context for their next question — so we want a RICH selection surface. Some phrases are already bracketed [[like this]]; suggest 5 to 8 ADDITIONAL phrases that aren't already bracketed. EVERY phrase MUST appear verbatim in the text (preserve exact spelling and case) AND be 1 to 4 words long — phrases longer than 4 words are not allowed. Aim for VARIETY: qualities, attributes, comparisons, tradeoffs — not just proper nouns. Output ONLY a JSON array of strings. No prose, no markdown fence.`;
 
 // Each agent reads the conversation and produces a few "next-move" pills the
 // user can toggle on. They share a voice (first-person, plain words, sticky-
@@ -130,7 +132,7 @@ app.post('/api/generate', async (req, res) => {
   try {
     const stream = anthropic.messages.stream({
       model: MAIN_MODEL,
-      max_tokens: 450,
+      max_tokens: 600,
       system: systemPrompt,
       messages,
     });
@@ -296,6 +298,49 @@ app.post('/api/chip-questions', async (req, res) => {
   } catch (err) {
     console.error('chip-questions failed:', err?.message);
     res.json({ questions: {} });
+  }
+});
+
+app.post('/api/chips-augment', async (req, res) => {
+  const { text = '', existing = [] } = req.body ?? {};
+  if (!text.trim()) {
+    res.json({ phrases: [] });
+    return;
+  }
+  try {
+    const response = await anthropic.messages.create({
+      model: MIST_MODEL,
+      max_tokens: 350,
+      system: CHIPS_AUGMENT_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Text:\n"""${text}"""\n\nAlready bracketed: ${JSON.stringify(existing)}\n\nReturn 5 to 8 additional verbatim phrases as a JSON array of strings.`,
+        },
+      ],
+    });
+    const raw = response.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('');
+    const start = raw.indexOf('[');
+    const end = raw.lastIndexOf(']');
+    if (start === -1 || end === -1 || end <= start) {
+      res.json({ phrases: [] });
+      return;
+    }
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    if (!Array.isArray(parsed)) {
+      res.json({ phrases: [] });
+      return;
+    }
+    const phrases = parsed
+      .filter((s) => typeof s === 'string' && s.trim())
+      .map((s) => s.trim())
+      .slice(0, 10);
+    res.json({ phrases });
+  } catch (err) {
+    console.error('chips-augment failed:', err?.message);
+    res.json({ phrases: [] });
   }
 });
 

@@ -15,6 +15,7 @@ import {
 } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
+  fetchAugmentedChips,
   fetchChipQuestions,
   fetchAgentPredictions,
   streamGenerate,
@@ -348,24 +349,50 @@ export function App() {
           }
         }
 
-        // Chip questions (Haiku) — async, populates assistant.meta.chipQuestions.
-        const chipTerms = Array.from(
+        // Two-step chip enrichment (both Haiku):
+        //   1. fetchAugmentedChips: Sonnet's prior keeps chip count low (3-5
+        //      even when asked for more). Haiku reads the response and
+        //      proposes 5-8 additional verbatim phrases worth wrapping. We
+        //      inject [[X]] markers around their first occurrence and write
+        //      the enriched text back to the assistant turn.
+        //   2. fetchChipQuestions for the FULL term list (original +
+        //      augmented) so each chip carries a contextual hover sentence.
+        const initialTerms = Array.from(
           new Set(
             [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
               m[1].trim(),
             ),
           ),
         );
-        if (chipTerms.length > 0) {
-          fetchChipQuestions(buffer, chipTerms)
-            .then((questions) => {
-              useConversation.getState().setChipQuestions(assistantId, questions);
-              if (precacheEnabledRef.current) {
-                warmCache(assistantId, Object.values(questions));
+        fetchAugmentedChips(buffer, initialTerms)
+          .then((phrases) => {
+            let finalText = buffer;
+            if (phrases.length > 0) {
+              finalText = injectChipBrackets(buffer, phrases);
+              if (finalText !== buffer) {
+                useConversation
+                  .getState()
+                  .setContent(assistantId, finalText, { streaming: false });
               }
-            })
-            .catch(() => {});
-        }
+            }
+            const allTerms = Array.from(
+              new Set(
+                [...finalText.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
+                  m[1].trim(),
+                ),
+              ),
+            );
+            if (allTerms.length === 0) return;
+            return fetchChipQuestions(finalText, allTerms);
+          })
+          .then((questions) => {
+            if (!questions) return;
+            useConversation.getState().setChipQuestions(assistantId, questions);
+            if (precacheEnabledRef.current) {
+              warmCache(assistantId, Object.values(questions));
+            }
+          })
+          .catch(() => {});
 
         // Reflections (Haiku) — populates assistant.meta.predictions, which
         // ActiveInputCard renders as the pill row.
@@ -589,25 +616,45 @@ export function App() {
           .getState()
           .setContent(assistantId, buffer, { streaming: false });
 
-        const chipTerms = Array.from(
+        // Same augment → questions chain as runTurnFrom (see comments there).
+        const initialTerms = Array.from(
           new Set(
             [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
               m[1].trim(),
             ),
           ),
         );
-        if (chipTerms.length > 0) {
-          fetchChipQuestions(buffer, chipTerms)
-            .then((questions) => {
-              useConversation
-                .getState()
-                .setChipQuestions(assistantId, questions);
-              if (precacheEnabledRef.current) {
-                warmCache(assistantId, Object.values(questions));
+        fetchAugmentedChips(buffer, initialTerms)
+          .then((phrases) => {
+            let finalText = buffer;
+            if (phrases.length > 0) {
+              finalText = injectChipBrackets(buffer, phrases);
+              if (finalText !== buffer) {
+                useConversation
+                  .getState()
+                  .setContent(assistantId, finalText, { streaming: false });
               }
-            })
-            .catch(() => {});
-        }
+            }
+            const allTerms = Array.from(
+              new Set(
+                [...finalText.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
+                  m[1].trim(),
+                ),
+              ),
+            );
+            if (allTerms.length === 0) return;
+            return fetchChipQuestions(finalText, allTerms);
+          })
+          .then((questions) => {
+            if (!questions) return;
+            useConversation
+              .getState()
+              .setChipQuestions(assistantId, questions);
+            if (precacheEnabledRef.current) {
+              warmCache(assistantId, Object.values(questions));
+            }
+          })
+          .catch(() => {});
 
         const fullHistory = [
           ...history,
@@ -1121,6 +1168,40 @@ function repositionChain(editor: Editor, sourceId: TurnId): void {
     }
     repositionChain(editor, child.id);
   }
+}
+
+/**
+ * Inject `[[X]]` markers around the first verbatim occurrence of each phrase
+ * that isn't already inside an existing pair of brackets. Case-insensitive
+ * search, original casing preserved in the rewrite. Returns the augmented
+ * text — used to enrich the chip surface beyond what Sonnet emitted.
+ */
+function injectChipBrackets(text: string, phrases: string[]): string {
+  let result = text;
+  for (const raw of phrases) {
+    const phrase = raw.trim();
+    if (!phrase) continue;
+    const target = phrase.toLowerCase();
+    const haystack = result.toLowerCase();
+    let from = 0;
+    while (from < haystack.length) {
+      const idx = haystack.indexOf(target, from);
+      if (idx < 0) break;
+      // Skip if this occurrence is already inside [[...]]
+      const before = result.slice(0, idx);
+      const opens = (before.match(/\[\[/g) ?? []).length;
+      const closes = (before.match(/\]\]/g) ?? []).length;
+      if (opens > closes) {
+        from = idx + target.length;
+        continue;
+      }
+      const matched = result.slice(idx, idx + phrase.length);
+      result =
+        result.slice(0, idx) + '[[' + matched + ']]' + result.slice(idx + phrase.length);
+      break;
+    }
+  }
+  return result;
 }
 
 // `toRichText` and `TLShapeId` are still used by sync/edge creation —

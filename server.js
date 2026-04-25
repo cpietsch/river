@@ -180,14 +180,7 @@ ${rendered}
 Write the navigational map now.`;
 }
 
-/**
- * Build the kickoff user-message body that the Managed Agent session sees.
- * The conversation is a tree client-side, so we don't keep a long-lived
- * session per branch — instead, each turn opens a fresh session and embeds
- * the priors as text in one user.message: priority constraints, carried
- * assumptions, prior turns, then the current question.
- */
-function buildKickoffMessage(history, input, emphasized, userContext) {
+function renderConstraintsAndContext(emphasized, userContext) {
   const parts = [];
   const constraints = (Array.isArray(emphasized) ? emphasized : [])
     .filter((c) => typeof c === 'string' && c.trim())
@@ -207,15 +200,60 @@ function buildKickoffMessage(history, input, emphasized, userContext) {
       `IMPLICIT ASSUMPTIONS the user is carrying (tapped pills — engage with these explicitly: examine, challenge, or accommodate, don't just restate):\n${ctx}`,
     );
   }
-  const priors = (Array.isArray(history) ? history : [])
-    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim());
+  return parts;
+}
+
+/**
+ * Full kickoff for a *fresh* session: priors must be embedded as text since
+ * the session has no event history yet. Used on the first turn of a canvas
+ * (or after the session is lost / re-minted).
+ */
+function buildFullKickoff(history, input, emphasized, userContext) {
+  const parts = renderConstraintsAndContext(emphasized, userContext);
+  const priors = (Array.isArray(history) ? history : []).filter(
+    (m) =>
+      m &&
+      (m.role === 'user' || m.role === 'assistant') &&
+      typeof m.content === 'string' &&
+      m.content.trim(),
+  );
   if (priors.length) {
     const rendered = priors
-      .map((m) => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.trim()}`)
+      .map(
+        (m) =>
+          `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.trim()}`,
+      )
       .join('\n\n');
     parts.push(`CONVERSATION SO FAR:\n${rendered}`);
   }
   parts.push(`CURRENT MESSAGE:\nUSER: ${input.trim()}`);
+  return parts.join('\n\n---\n\n');
+}
+
+/**
+ * Skinny kickoff for a *reused* session. The session's event log already
+ * contains all prior user.message + agent.message events, so we don't
+ * re-embed the conversation text — that doubles every turn into the
+ * session's context and grows quadratically. Instead we send just enough
+ * for the agent to (a) know which branch is active and (b) honor any
+ * priority constraints / chip context that arrived this turn.
+ */
+function buildSkinnyKickoff(pathIds, input, emphasized, userContext) {
+  const parts = renderConstraintsAndContext(emphasized, userContext);
+  const ids = (Array.isArray(pathIds) ? pathIds : []).filter(
+    (id) => typeof id === 'string' && id.trim(),
+  );
+  if (ids.length) {
+    // Card-id chain root → leaf. The agent matches these against prior
+    // user.message / agent.message events to ground itself in the right
+    // branch. get_card is available if it needs verbatim content from
+    // any specific card.
+    const chain = ids.map((id, i) =>
+      i === ids.length - 1 ? `${id} (current)` : id,
+    ).join(' → ');
+    parts.push(`BRANCH PATH (root → leaf):\n${chain}`);
+  }
+  parts.push(`USER: ${input.trim()}`);
   return parts.join('\n\n---\n\n');
 }
 
@@ -263,6 +301,7 @@ app.post('/api/generate', async (req, res) => {
     userContext = [],
     graph = null,
     sessionId: incomingSessionId = null,
+    pathIds = [],
   } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
@@ -278,7 +317,13 @@ app.post('/api/generate', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  const text = buildKickoffMessage(history, input, emphasized, userContext);
+  // Skinny when the session is being reused (its event log already has the
+  // conversation), full when we're about to mint a fresh session.
+  const buildKickoff = () =>
+    incomingSessionId
+      ? buildSkinnyKickoff(pathIds, input, emphasized, userContext)
+      : buildFullKickoff(history, input, emphasized, userContext);
+  let text = buildKickoff();
   const startedAt = Date.now();
   logEvent('generate.start', {
     inputLen: input.length,
@@ -287,6 +332,7 @@ app.post('/api/generate', async (req, res) => {
     userContextCount: Array.isArray(userContext) ? userContext.length : 0,
     graphSize: graph?.turns ? Object.keys(graph.turns).length : 0,
     sessionReused: !!incomingSessionId,
+    kickoffChars: text.length,
   });
 
   let sessionId = incomingSessionId;
@@ -296,20 +342,10 @@ app.post('/api/generate', async (req, res) => {
   let inputTokens = 0;
   let outputTokens = 0;
   try {
-    // Reuse the project's session if the client passed one (and it still
-    // exists). Otherwise mint a fresh session and tell the client about it
-    // via the first SSE event so it can persist the id.
-    if (sessionId) {
-      try {
-        await anthropic.beta.sessions.retrieve(sessionId);
-      } catch (err) {
-        logEvent('generate.session_lost', {
-          sessionId,
-          message: err?.message,
-        });
-        sessionId = null;
-      }
-    }
+    // No pre-flight retrieve — Managed Agent sessions don't expire on
+    // their own (only manual delete or explicit termination), so checking
+    // is wasted overhead. If the id is genuinely bad the events.send call
+    // below will throw and we fall back into a fresh-session retry.
     if (!sessionId) {
       const sessionParams = {
         agent: AGENT_ID,
@@ -340,16 +376,43 @@ app.post('/api/generate', async (req, res) => {
     // Stream-first: open the SSE stream BEFORE sending the kickoff so we
     // don't miss early events. (See `shared/managed-agents-events.md` →
     // Stream-first ordering — the stream only delivers events emitted
-    // after it opens.)
-    const streamPromise = anthropic.beta.sessions.events.stream(sessionId);
-    await anthropic.beta.sessions.events.send(sessionId, {
-      events: [
-        {
-          type: 'user.message',
-          content: [{ type: 'text', text }],
-        },
-      ],
-    });
+    // after it opens.) If the session id is stale (deleted out-of-band),
+    // the stream open or the send will throw — recover by minting a fresh
+    // session, switching to the full kickoff, and retrying once.
+    let streamPromise;
+    try {
+      streamPromise = anthropic.beta.sessions.events.stream(sessionId);
+      await anthropic.beta.sessions.events.send(sessionId, {
+        events: [
+          { type: 'user.message', content: [{ type: 'text', text }] },
+        ],
+      });
+    } catch (err) {
+      logEvent('generate.session_lost', {
+        sessionId,
+        message: err?.message,
+      });
+      // Fall back: mint a new session, swap to the full kickoff (the new
+      // session has no history), tell the client.
+      const sessionParams = { agent: AGENT_ID, environment_id: ENV_ID, title: input.trim().slice(0, 60) };
+      if (MEMORY_STORE_ID) {
+        sessionParams.resources = [
+          { type: 'memory_store', memory_store_id: MEMORY_STORE_ID, access: 'read_write', instructions: 'Long-term memory across all river-2 conversations.' },
+        ];
+      }
+      const created = await anthropic.beta.sessions.create(sessionParams);
+      sessionId = created.id;
+      text = buildFullKickoff(history, input, emphasized, userContext);
+      res.write(
+        `data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`,
+      );
+      streamPromise = anthropic.beta.sessions.events.stream(sessionId);
+      await anthropic.beta.sessions.events.send(sessionId, {
+        events: [
+          { type: 'user.message', content: [{ type: 'text', text }] },
+        ],
+      });
+    }
     const stream = await streamPromise;
 
     // Track which agent.message blocks we've already emitted so re-emitted

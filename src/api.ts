@@ -111,6 +111,7 @@ export async function streamGenerate(
     userContext?: string[];
     graph?: GraphSnapshot | null;
     sessionId?: string | null;
+    pathIds?: string[];
     onSessionId?: (id: string) => void;
     onProposal?: (p: BranchProposal) => void;
   } = {},
@@ -121,6 +122,7 @@ export async function streamGenerate(
     userContext = [],
     graph = null,
     sessionId = null,
+    pathIds = [],
     onSessionId,
     onProposal,
   } = opts;
@@ -134,6 +136,7 @@ export async function streamGenerate(
       userContext,
       graph,
       sessionId,
+      pathIds,
     }),
     signal,
   });

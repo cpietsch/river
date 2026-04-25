@@ -155,6 +155,18 @@ export function App() {
       .map((t) => ({ role: t.role, content: t.content }));
   }, []);
 
+  // Path of card ids from root → leaf for the active branch, used by skinny
+  // kickoffs to tell the agent which thread to focus on (without re-sending
+  // the full prior text the persistent session already has as events).
+  const pathIdsFor = useCallback((leafId: TurnId | null): TurnId[] => {
+    if (!leafId) return [];
+    return useConversation
+      .getState()
+      .getAncestors(leafId)
+      .filter((t) => t.content.trim() !== '')
+      .map((t) => t.id);
+  }, []);
+
   const getParentId = useCallback((childId: TurnId): TurnId | null => {
     return useConversation.getState().getTurn(childId)?.parentId ?? null;
   }, []);
@@ -353,6 +365,7 @@ export function App() {
               userContext,
               graph: buildGraphSnapshot(),
               sessionId: useConversation.getState().projectSessionId,
+              pathIds: pathIdsFor(userTurnId),
               onSessionId: (id) => {
                 if (
                   useConversation.getState().projectSessionId !== id
@@ -468,6 +481,7 @@ export function App() {
       busy,
       activeId,
       historyFor,
+      pathIdsFor,
       gatherEmphasized,
       getParentId,
       gatherSelectedChips,

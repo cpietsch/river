@@ -18,6 +18,7 @@ import {
   deleteSession,
   fetchAgentPredictions,
   fetchLabels,
+  fetchMemory,
   logEvent,
   streamGenerate,
   type ChatMessage,
@@ -63,6 +64,11 @@ export function App() {
   const [mapOpen, setMapOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [proposals, setProposals] = useState<BranchProposal[]>([]);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryFiles, setMemoryFiles] = useState<Record<string, string> | null>(
+    null,
+  );
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const labelInFlightRef = useRef(false);
   const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
   const archivedProjects = useConversation((s) => s.archive);
@@ -698,6 +704,23 @@ export function App() {
 
   const closeMap = useCallback(() => setMapOpen(false), []);
 
+  const openMemory = useCallback(async () => {
+    setMemoryOpen(true);
+    setMemoryBusy(true);
+    setMemoryFiles(null);
+    logEvent('client.open_memory', {});
+    try {
+      const { files } = await fetchMemory();
+      setMemoryFiles(files);
+    } finally {
+      setMemoryBusy(false);
+    }
+  }, []);
+
+  const closeMemory = useCallback(() => {
+    setMemoryOpen(false);
+  }, []);
+
   const onMapCardClick = useCallback(
     (id: TurnId) => {
       logEvent('client.map_jump', { id });
@@ -1063,6 +1086,31 @@ export function App() {
             />
           )}
         </div>
+
+        <button
+          type="button"
+          onClick={openMemory}
+          disabled={memoryBusy}
+          aria-label="Inspect agent memory"
+          data-testid="open-memory"
+          title="See what the agent has written to its persistent memory store across sessions on this canvas."
+          style={{
+            ...toolbarBtn,
+            color: memoryBusy ? '#aaa' : '#111',
+            cursor: memoryBusy ? 'default' : 'pointer',
+            opacity: memoryBusy ? 0.6 : 1,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M9.5 4a3.5 3.5 0 0 0-3.5 3.5v.5a3 3 0 0 0-3 3v1a3 3 0 0 0 3 3v.5A3.5 3.5 0 0 0 9.5 19h.5V4h-.5zM14.5 4a3.5 3.5 0 0 1 3.5 3.5v.5a3 3 0 0 1 3 3v1a3 3 0 0 1-3 3v.5a3.5 3.5 0 0 1-3.5 3.5H14V4h.5z"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinejoin="round"
+            />
+          </svg>
+          memory
+        </button>
       </div>
 
       {/* Top-right floating panel: agent's branch proposals */}
@@ -1071,6 +1119,15 @@ export function App() {
           proposals={proposals}
           onAccept={acceptProposal}
           onDismiss={dismissProposal}
+        />
+      )}
+
+      {/* Memory inspector overlay */}
+      {memoryOpen && (
+        <MemoryPanel
+          files={memoryFiles}
+          busy={memoryBusy}
+          onClose={closeMemory}
         />
       )}
 
@@ -1186,6 +1243,193 @@ const toolbarBtn: React.CSSProperties = {
   WebkitTapHighlightColor: 'transparent',
   minHeight: 40,
 };
+
+/* ─── Memory inspector ─── */
+
+/**
+ * Modal-ish overlay that lists every file in the agent's persistent memory
+ * store with its contents. Spawned by the "memory" toolbar button. Shows
+ * a loading state while the server fetches (a fresh session has to read
+ * the store via bash). Empty state when the agent hasn't written anything
+ * yet — most canvases will start there.
+ */
+function MemoryPanel({
+  files,
+  busy,
+  onClose,
+}: {
+  files: Record<string, string> | null;
+  busy: boolean;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const entries = files ? Object.entries(files).sort() : [];
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Agent memory"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(20, 18, 14, 0.42)',
+        backdropFilter: 'blur(2px)',
+        zIndex: 2000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 'max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom))',
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          maxWidth: 720,
+          width: '100%',
+          maxHeight: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#fbfaf6',
+          border: '1px solid #1a1a1a',
+          borderRadius: 14,
+          boxShadow: '0 16px 48px rgba(0,0,0,0.24)',
+          overflow: 'hidden',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          color: '#1a1a1a',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '14px 18px',
+            borderBottom: '1px solid #eeedea',
+            fontSize: 12,
+            letterSpacing: 0.5,
+            textTransform: 'uppercase',
+            color: '#6b6660',
+          }}
+        >
+          <span>
+            agent memory
+            {busy ? ' · loading…' : files ? ` · ${entries.length} file${entries.length === 1 ? '' : 's'}` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              border: 'none',
+              background: 'none',
+              padding: 4,
+              cursor: 'pointer',
+              color: '#6b6660',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <div
+          style={{
+            flex: '1 1 auto',
+            overflowY: 'auto',
+            padding: 18,
+          }}
+        >
+          {busy && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                color: '#6b6660',
+                fontStyle: 'italic',
+              }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: '#2e6ecf',
+                  boxShadow: '0 0 0 4px rgba(46,110,207,0.18)',
+                }}
+              />
+              reading the agent's memory store…
+            </div>
+          )}
+          {!busy && files && entries.length === 0 && (
+            <div style={{ color: '#9a9590', lineHeight: 1.5, fontSize: 14 }}>
+              The agent hasn't written anything to memory yet. As you have
+              conversations, it'll save durable notes (preferences,
+              recurring topics, conclusions worth keeping) here. They persist
+              across all canvases on this account.
+            </div>
+          )}
+          {!busy && files && entries.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {entries.map(([path, content]) => (
+                <div
+                  key={path}
+                  style={{
+                    border: '1px solid #eeedea',
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      background: '#f3f2ee',
+                      fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+                      fontSize: 12,
+                      color: '#3a3835',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                    title={path}
+                  >
+                    {path}
+                  </div>
+                  <pre
+                    style={{
+                      margin: 0,
+                      padding: '10px 12px',
+                      fontFamily: '"Source Serif 4", Georgia, serif',
+                      fontSize: 14,
+                      lineHeight: 1.55,
+                      color: '#1a1a1a',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {content}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ─── Branch proposals panel ─── */
 

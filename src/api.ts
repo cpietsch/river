@@ -225,6 +225,33 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Inspect the agent's persistent memory store. Returns a `{path: content}`
+ * map of every file the agent has written under `/mnt/memory/`. Slow —
+ * the server spins up a throwaway session to read the store, so expect
+ * 5-15 seconds. Empty `files` object means the agent hasn't written
+ * anything yet (or memory isn't configured).
+ */
+export async function fetchMemory(): Promise<{
+  files: Record<string, string>;
+  configured: boolean;
+}> {
+  try {
+    const res = await fetch('/api/memory');
+    if (!res.ok) return { files: {}, configured: false };
+    const data = (await res.json()) as {
+      files?: Record<string, string>;
+      configured?: boolean;
+    };
+    return {
+      files: data.files ?? {},
+      configured: data.configured ?? false,
+    };
+  } catch {
+    return { files: {}, configured: false };
+  }
+}
+
 // Card-label batch input. The client only sends cards lacking labels.
 export type LabelCard = { id: string; role: 'user' | 'assistant'; content: string };
 

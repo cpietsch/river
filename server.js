@@ -662,6 +662,108 @@ app.post('/api/generate', async (req, res) => {
   }
 });
 
+/**
+ * Dump the agent's persistent memory store as `{path: content}` JSON.
+ * Spins up a throwaway session attached to the same memory store, asks
+ * the agent to list and read every file under /mnt/memory/<name>/, and
+ * parses the JSON response. Throwaway so it doesn't pollute the project
+ * session's event log.
+ */
+app.get('/api/memory', async (req, res) => {
+  if (!AGENT_ID || !ENV_ID || !MEMORY_STORE_ID) {
+    res.json({ files: {}, configured: false });
+    return;
+  }
+  const startedAt = Date.now();
+  let session;
+  try {
+    session = await anthropic.beta.sessions.create({
+      agent: AGENT_ID,
+      environment_id: ENV_ID,
+      title: 'memory-inspect',
+      resources: [
+        {
+          type: 'memory_store',
+          memory_store_id: MEMORY_STORE_ID,
+          access: 'read_only',
+          instructions: 'Read-only inspection of the persistent memory store.',
+        },
+      ],
+    });
+    const streamPromise = anthropic.beta.sessions.events.stream(session.id);
+    await anthropic.beta.sessions.events.send(session.id, {
+      events: [
+        {
+          type: 'user.message',
+          content: [
+            {
+              type: 'text',
+              text: `INSPECTION MODE — internal request, not from a user. Do NOT call create_branch / flag_card / web_search.
+
+Use bash and read tools to list every file under /mnt/memory/ (recursively). For each file, capture its absolute path and its full text contents.
+
+Output ONLY a single JSON object whose keys are the absolute file paths and whose values are the file contents (string). No prose, no markdown fences, no commentary. If the directory is empty or missing, output {}.`,
+            },
+          ],
+        },
+      ],
+    });
+    const stream = await streamPromise;
+    let textOut = '';
+    for await (const event of stream) {
+      if (event.type === 'agent.message' && Array.isArray(event.content)) {
+        const chunk = event.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+        if (chunk) textOut = chunk;
+      }
+      if (event.type === 'session.status_terminated') break;
+      if (
+        event.type === 'session.status_idle' &&
+        event.stop_reason?.type !== 'requires_action'
+      ) {
+        break;
+      }
+      if (event.type === 'session.error') break;
+    }
+    const start = textOut.indexOf('{');
+    const end = textOut.lastIndexOf('}');
+    let files = {};
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        const parsed = JSON.parse(textOut.slice(start, end + 1));
+        if (parsed && typeof parsed === 'object') {
+          for (const [k, v] of Object.entries(parsed)) {
+            if (typeof v === 'string') files[k] = v;
+          }
+        }
+      } catch (err) {
+        logEvent('memory.parse_error', { message: err?.message });
+      }
+    }
+    logEvent('memory.complete', {
+      durationMs: Date.now() - startedAt,
+      fileCount: Object.keys(files).length,
+    });
+    res.json({ files, configured: true });
+  } catch (err) {
+    logEvent('memory.error', {
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
+    res.status(500).json({ error: String(err?.message ?? err) });
+  } finally {
+    if (session) {
+      try {
+        await anthropic.beta.sessions.delete(session.id);
+      } catch (_) {
+        // ignore
+      }
+    }
+  }
+});
+
 // Best-effort session deletion. Used by the client when the user starts a
 // new canvas — the prior project session and all its event history are no
 // longer referenced. 30-day container-checkpoint TTL means dormant sessions

@@ -11,6 +11,10 @@ const MIST_MODEL = process.env.MIST_MODEL ?? 'claude-haiku-4-5-20251001';
 // Messages API since they're stateless one-shot calls.
 const AGENT_ID = process.env.AGENT_ID;
 const ENV_ID = process.env.ENV_ID;
+// Workspace-scoped memory the agent reads/writes across sessions. Mounted
+// into the container at /mnt/memory/river-2-memory/ — the agent uses the
+// regular file tools (read/write/edit/glob) to interact.
+const MEMORY_STORE_ID = process.env.MEMORY_STORE_ID;
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
@@ -20,6 +24,11 @@ if (!apiKey) {
 if (!AGENT_ID || !ENV_ID) {
   console.warn(
     '! AGENT_ID/ENV_ID missing — /api/generate will fail. Run `npm run setup-agent` to create them.',
+  );
+}
+if (!MEMORY_STORE_ID) {
+  console.warn(
+    '! MEMORY_STORE_ID missing — sessions will run without persistent memory. Run `npm run setup-agent` to provision one.',
   );
 }
 
@@ -145,8 +154,50 @@ function buildKickoffMessage(history, input, emphasized, userContext) {
   return parts.join('\n\n---\n\n');
 }
 
+/**
+ * Resolve a custom tool call from the agent against the conversation graph
+ * snapshot the client sent with this request. Returns a JSON-stringified
+ * result for the user.custom_tool_result event.
+ */
+function resolveGraphTool(name, input, graph) {
+  const turns = graph?.turns ?? {};
+  if (name === 'get_graph_summary') {
+    const summary = Object.values(turns).map((t) => ({
+      id: t.id,
+      role: t.role,
+      parentId: t.parentId ?? null,
+      preview: (t.content ?? '').slice(0, 240),
+      emphasis: t.emphasis ?? 1,
+    }));
+    return JSON.stringify({ turns: summary });
+  }
+  if (name === 'get_card') {
+    const id = input?.card_id;
+    const turn = id ? turns[id] : null;
+    if (!turn) {
+      return JSON.stringify({
+        error: `No card with id ${id ?? '(missing)'}`,
+      });
+    }
+    return JSON.stringify({
+      id: turn.id,
+      role: turn.role,
+      parentId: turn.parentId ?? null,
+      content: turn.content ?? '',
+      emphasis: turn.emphasis ?? 1,
+    });
+  }
+  return JSON.stringify({ error: `Unknown tool: ${name}` });
+}
+
 app.post('/api/generate', async (req, res) => {
-  const { history = [], input = '', emphasized = [], userContext = [] } = req.body ?? {};
+  const {
+    history = [],
+    input = '',
+    emphasized = [],
+    userContext = [],
+    graph = null,
+  } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
     return;
@@ -165,11 +216,23 @@ app.post('/api/generate', async (req, res) => {
 
   let session;
   try {
-    session = await anthropic.beta.sessions.create({
+    const sessionParams = {
       agent: AGENT_ID,
       environment_id: ENV_ID,
       title: input.trim().slice(0, 60),
-    });
+    };
+    if (MEMORY_STORE_ID) {
+      sessionParams.resources = [
+        {
+          type: 'memory_store',
+          memory_store_id: MEMORY_STORE_ID,
+          access: 'read_write',
+          instructions:
+            'Long-term memory across all river-2 conversations. Read first; write durably useful learnings (preferences, recurring topics). Skip one-off chatter.',
+        },
+      ];
+    }
+    session = await anthropic.beta.sessions.create(sessionParams);
 
     // Stream-first: open the SSE stream BEFORE sending the kickoff so we
     // don't miss early events. (See `shared/managed-agents-events.md` →
@@ -202,10 +265,29 @@ app.post('/api/generate', async (req, res) => {
           lastEmitted = chunk;
         }
       }
+      // Custom tool calls — resolve them locally against the graph snapshot
+      // the client sent and reply with user.custom_tool_result. The session
+      // goes idle (requires_action) until we send the result, then resumes.
+      if (event.type === 'agent.custom_tool_use') {
+        const result = resolveGraphTool(event.name, event.input, graph);
+        try {
+          await anthropic.beta.sessions.events.send(session.id, {
+            events: [
+              {
+                type: 'user.custom_tool_result',
+                custom_tool_use_id: event.id,
+                content: [{ type: 'text', text: result }],
+              },
+            ],
+          });
+        } catch (err) {
+          console.error('failed to send custom_tool_result:', err?.message);
+        }
+        continue;
+      }
       // Terminal break: idle with a non-action stop_reason, or terminated.
-      // requires_action means the agent is awaiting client input
-      // (tool_confirmation or custom_tool_result) — we don't expose those
-      // tools, so it shouldn't happen, but skip just in case.
+      // requires_action means the agent is awaiting our custom_tool_result —
+      // skip the break, we just sent it (or are about to).
       if (event.type === 'session.status_terminated') break;
       if (
         event.type === 'session.status_idle' &&

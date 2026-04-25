@@ -52,6 +52,20 @@ export async function fetchMist(input: string, history: ChatMessage[]): Promise<
   }
 }
 
+// Minimal snapshot of the conversation graph that the server passes through
+// to custom-tool calls (get_graph_summary, get_card). Just the structural
+// fields — no chip spans, no streaming flag, no agent predictions. Streaming
+// turns are excluded so half-written assistant cards don't appear in the
+// agent's view of the tree.
+export type GraphSnapshotTurn = {
+  id: string;
+  role: 'user' | 'assistant';
+  parentId: string | null;
+  content: string;
+  emphasis: number;
+};
+export type GraphSnapshot = { turns: Record<string, GraphSnapshotTurn> };
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * returns the full concatenated text once the stream finishes.
@@ -63,11 +77,12 @@ export async function streamGenerate(
   signal?: AbortSignal,
   emphasized: string[] = [],
   userContext: string[] = [],
+  graph: GraphSnapshot | null = null,
 ): Promise<string> {
   const res = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input, history, emphasized, userContext }),
+    body: JSON.stringify({ input, history, emphasized, userContext, graph }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`generate failed ${res.status}`);

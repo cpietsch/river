@@ -19,6 +19,7 @@ import {
   streamGenerate,
   type ChatMessage,
   type AgentPrediction,
+  type GraphSnapshot,
 } from './api';
 import { useConversation } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
@@ -156,6 +157,27 @@ export function App() {
       .map((t) => t.content.trim());
   }, []);
 
+  // Snapshot of the full conversation graph the server passes to the brain's
+  // custom tools (get_graph_summary, get_card). Only structural fields —
+  // skip streaming turns and chip-span/prediction meta. Empty turns are
+  // dropped so half-written cards don't appear in the agent's view.
+  const buildGraphSnapshot = useCallback((): GraphSnapshot => {
+    const all = useConversation.getState().turns;
+    const out: Record<string, GraphSnapshot['turns'][string]> = {};
+    for (const t of Object.values(all)) {
+      if (t.streaming) continue;
+      if (!t.content.trim()) continue;
+      out[t.id] = {
+        id: t.id,
+        role: t.role,
+        parentId: t.parentId ?? null,
+        content: t.content,
+        emphasis: t.emphasis ?? 1,
+      };
+    }
+    return { turns: out };
+  }, []);
+
   const warmCache = useCallback(
     (parentAssistantId: TurnId, prompts: string[]) => {
       if (prompts.length === 0) return;
@@ -167,13 +189,13 @@ export function App() {
           continue;
         precacheInFlightRef.current.add(key);
         let buffer = '';
-        streamGenerate(prompt, history, (d) => { buffer += d; }, undefined, emphasized)
+        streamGenerate(prompt, history, (d) => { buffer += d; }, undefined, emphasized, [], buildGraphSnapshot())
           .then(() => { precacheRef.current.set(key, buffer); })
           .catch(() => {})
           .finally(() => { precacheInFlightRef.current.delete(key); });
       }
     },
-    [historyFor, gatherEmphasized],
+    [historyFor, gatherEmphasized, buildGraphSnapshot],
   );
 
   // Mobile keyboard offset.
@@ -316,6 +338,7 @@ export function App() {
             undefined,
             emphasized,
             userContext,
+            buildGraphSnapshot(),
           );
           useConversation
             .getState()
@@ -416,6 +439,7 @@ export function App() {
       getParentId,
       warmCache,
       gatherSelectedChips,
+      buildGraphSnapshot,
     ],
   );
 
@@ -585,6 +609,8 @@ export function App() {
             },
             undefined,
             emphasized,
+            [],
+            buildGraphSnapshot(),
           );
         } catch (err) {
           useConversation
@@ -629,7 +655,7 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [busy, historyFor, gatherEmphasized, warmCache]);
+  }, [busy, historyFor, gatherEmphasized, warmCache, buildGraphSnapshot]);
 
   function onInputChange(text: string): void {
     setInput(text);

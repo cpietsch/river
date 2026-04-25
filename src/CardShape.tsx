@@ -179,10 +179,13 @@ function CardBody({ shape }: { shape: CardShape }) {
         background: bg,
         border: `${emphWidth}px solid ${emphBorder}`,
         borderRadius: 10,
-        color: '#111',
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        fontSize: 14,
-        lineHeight: 1.5,
+        color: '#1a1a1a',
+        // Body uses a serif stack for long-form reading rhythm; the
+        // surrounding UI chrome (toolbar, pills, input) keeps sans-serif.
+        fontFamily:
+          '"Charter", "Iowan Old Style", "Source Serif Pro", "Source Serif", "Georgia", "Times New Roman", serif',
+        fontSize: 16,
+        lineHeight: 1.65,
         overflow: 'hidden',
         pointerEvents: 'all',
         boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04)',
@@ -191,15 +194,16 @@ function CardBody({ shape }: { shape: CardShape }) {
       <div
         ref={contentRef}
         style={{
-          // Reserve ~34px of bottom padding so the floating icon row below
-          // never sits on top of the last line of text.
-          padding: '10px 12px 34px 12px',
+          // Generous breathing room top + sides; bottom keeps space for the
+          // floating icon row.
+          padding: '18px 22px 42px 22px',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
-          fontSize: 14,
-          lineHeight: 1.5,
-          color: content ? '#111' : '#bbb',
+          fontSize: 16,
+          lineHeight: 1.65,
+          color: content ? '#1a1a1a' : '#bbb',
           fontStyle: content ? 'normal' : 'italic',
+          letterSpacing: '0.005em',
         }}
       >
         {content

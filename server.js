@@ -145,7 +145,8 @@ Rules:
 - Capture the GIST, not a generic placeholder
 - For user cards: phrase as a topic ("Cooling fan tradeoffs", "How HDR works")
 - For assistant cards: phrase as the takeaway ("Liquid wins for sustained loads", "HDR maps tonal range")
-- No quotes, no emojis, no markdown
+- No quotes, no emojis, no markdown (no asterisks, no underscores, no brackets)
+- Plain text only — the labels render as inline text in a UI menu
 
 Output ONLY a JSON object whose keys are the card ids and values are the labels. No prose, no fence.`;
 

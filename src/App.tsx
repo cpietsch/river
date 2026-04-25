@@ -801,6 +801,8 @@ export function App() {
           </button>
           {mapOpen && (
             <MapMenu
+              editorRef={editorRef}
+              activeId={activeId}
               onClose={closeMap}
               onCardClick={onMapCardClick}
             />
@@ -921,106 +923,122 @@ const toolbarBtn: React.CSSProperties = {
   minHeight: 40,
 };
 
-/* ─── Map menu (tree view) ─── */
+/* ─── Map menu (spatial mini-map) ─── */
 
-interface TreeNode {
+interface MiniNode {
   id: TurnId;
   role: 'user' | 'assistant';
   label: string;
-  depth: number;
-  children: TreeNode[];
+  // Box position in *minimap* coordinates (already scaled + padded).
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  // Center point — used as edge endpoint to/from this node.
+  cx: number;
+  cy: number;
+  parentId: TurnId | null;
 }
 
+const MAP_WIDTH = 280;
+const MAP_HEIGHT = 320;
+const MAP_PAD = 14;
+
 /**
- * Build a depth-tagged tree from the flat turn store. Roots (parentId=null)
- * become top-level nodes; each child indents one level. Empty or streaming
- * turns are skipped; their children promote to their grandparent so the
- * tree never has placeholder gaps.
+ * Build a list of MiniNodes by reading each turn's tldraw shape position,
+ * then scaling the bounding box to fit `MAP_WIDTH × MAP_HEIGHT`. Streaming
+ * / empty placeholder turns are skipped.
  */
-function buildTree(
+function buildMiniNodes(
   turns: Record<TurnId, import('./graph/types').Turn>,
-): TreeNode[] {
-  const childrenOf = new Map<TurnId | null, TurnId[]>();
-  for (const t of Object.values(turns)) {
-    const key = t.parentId ?? null;
-    const arr = childrenOf.get(key) ?? [];
-    arr.push(t.id);
-    childrenOf.set(key, arr);
+  editor: Editor | null,
+): MiniNode[] {
+  if (!editor) return [];
+  const visible = Object.values(turns).filter(
+    (t) => !t.streaming && t.content.trim().length > 0,
+  );
+  type Raw = { t: import('./graph/types').Turn; x: number; y: number; w: number; h: number };
+  const raws: Raw[] = [];
+  for (const t of visible) {
+    const shape = editor.getShape(t.id) as unknown as CardShape | undefined;
+    if (!shape) continue;
+    raws.push({ t, x: shape.x, y: shape.y, w: CARD_WIDTH, h: shape.props.h });
   }
-  const visit = (id: TurnId, depth: number): TreeNode | null => {
-    const t = turns[id];
-    if (!t) return null;
-    if (!t.content.trim() || t.streaming) {
-      // Skip placeholder; promote its children. We can't return one node, so
-      // return null and let the caller flatten via spread.
-      return null;
-    }
-    const fallback = t.content.trim().slice(0, 60).replace(/\s+/g, ' ');
-    const node: TreeNode = {
+  if (raws.length === 0) return [];
+  const minX = Math.min(...raws.map((r) => r.x));
+  const minY = Math.min(...raws.map((r) => r.y));
+  const maxX = Math.max(...raws.map((r) => r.x + r.w));
+  const maxY = Math.max(...raws.map((r) => r.y + r.h));
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  // Fit into the inner area (after pad on each side). Preserve aspect by
+  // taking the smaller scale.
+  const innerW = MAP_WIDTH - MAP_PAD * 2;
+  const innerH = MAP_HEIGHT - MAP_PAD * 2;
+  const scale = Math.min(innerW / spanX, innerH / spanY);
+  // Center the scaled graph in the available area.
+  const offX = (MAP_WIDTH - spanX * scale) / 2;
+  const offY = (MAP_HEIGHT - spanY * scale) / 2;
+  // Strip markdown / error noise from the fallback so labels read cleanly
+  // when Haiku hasn't filled in yet.
+  const cleanFallback = (raw: string) => {
+    if (raw.startsWith('[error:')) return 'failed turn';
+    return stripMarkdown(raw)
+      .plain.trim()
+      .replace(/\s+/g, ' ')
+      .slice(0, 80);
+  };
+  return raws.map(({ t, x, y, w, h }) => {
+    const sx = (x - minX) * scale + offX;
+    const sy = (y - minY) * scale + offY;
+    const sw = Math.max(8, w * scale);
+    const sh = Math.max(6, h * scale);
+    return {
       id: t.id,
       role: t.role,
-      label: (t.meta.label ?? fallback).trim(),
-      depth,
-      children: [],
+      label: (t.meta.label ?? cleanFallback(t.content)).trim() || '…',
+      x: sx,
+      y: sy,
+      w: sw,
+      h: sh,
+      cx: sx + sw / 2,
+      cy: sy + sh / 2,
+      parentId: t.parentId,
     };
-    const kids = childrenOf.get(id) ?? [];
-    for (const k of kids) {
-      const child = visit(k, depth + 1);
-      if (child) node.children.push(child);
-      else {
-        // Promote grandchildren of skipped placeholders to this depth.
-        const grand = childrenOf.get(k) ?? [];
-        for (const g of grand) {
-          const gn = visit(g, depth + 1);
-          if (gn) node.children.push(gn);
-        }
-      }
-    }
-    return node;
-  };
-  const out: TreeNode[] = [];
-  for (const rootId of childrenOf.get(null) ?? []) {
-    const n = visit(rootId, 0);
-    if (n) out.push(n);
-    else {
-      // Skipped root: promote its children as new roots.
-      const kids = childrenOf.get(rootId) ?? [];
-      for (const k of kids) {
-        const kn = visit(k, 0);
-        if (kn) out.push(kn);
-      }
-    }
-  }
-  return out;
-}
-
-function flattenTree(nodes: TreeNode[]): TreeNode[] {
-  const out: TreeNode[] = [];
-  const walk = (n: TreeNode) => {
-    out.push(n);
-    for (const c of n.children) walk(c);
-  };
-  for (const n of nodes) walk(n);
-  return out;
+  });
 }
 
 /**
- * Dropdown menu anchored to the map toolbar button. Renders the conversation
- * graph as an indented tree of cards; each row's title comes from the cached
- * label on the turn (Haiku-generated, refreshed in the background). Click a
- * row to pan the camera to that card.
+ * Dropdown panel anchored to the map toolbar button. Renders the canvas as
+ * a scaled mini-map: each card a small rect at its actual position, edges
+ * showing parent → child links. Click a rect to pan the camera there.
+ * Tapping/hovering reveals the card's label in the footer.
  */
 function MapMenu({
+  editorRef,
+  activeId,
   onClose,
   onCardClick,
 }: {
+  editorRef: React.MutableRefObject<Editor | null>;
+  activeId: TurnId | null;
   onClose: () => void;
   onCardClick: (id: TurnId) => void;
 }) {
   const turns = useConversation((s) => s.turns);
-  const items = useMemo(() => flattenTree(buildTree(turns)), [turns]);
+  const nodes = useMemo(
+    () => buildMiniNodes(turns, editorRef.current),
+    [turns, editorRef],
+  );
+  const byId = useMemo(() => {
+    const m = new Map<TurnId, MiniNode>();
+    for (const n of nodes) m.set(n.id, n);
+    return m;
+  }, [nodes]);
+  const [hoverId, setHoverId] = useState<TurnId | null>(null);
+  const focused = hoverId ?? activeId ?? null;
+  const focusNode = focused ? byId.get(focused) ?? null : null;
 
-  // ESC closes; click outside also closes (handled by the outer overlay).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -1029,9 +1047,6 @@ function MapMenu({
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // The dropdown sits anchored under the map button (its parent has
-  // position:relative). A transparent fixed-inset under the dropdown
-  // catches outside clicks without blocking the canvas while idle.
   return (
     <>
       <div
@@ -1046,81 +1061,128 @@ function MapMenu({
           position: 'absolute',
           top: 'calc(100% + 6px)',
           left: 0,
-          minWidth: 240,
-          maxWidth: 360,
-          maxHeight: 'calc(100vh - 120px)',
-          overflowY: 'auto',
+          width: MAP_WIDTH + 16,
           background: '#fff',
           border: '1px solid rgba(26,26,26,0.14)',
           borderRadius: 12,
-          boxShadow: '0 10px 30px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06)',
-          padding: 4,
+          boxShadow:
+            '0 10px 30px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06)',
+          padding: 8,
           fontFamily: 'system-ui, -apple-system, sans-serif',
-          fontSize: 13,
+          fontSize: 12,
           color: '#1a1a1a',
           zIndex: 1500,
         }}
       >
-        {items.length === 0 ? (
-          <div style={{ padding: '10px 14px', color: '#9a9590' }}>
+        {nodes.length === 0 ? (
+          <div style={{ padding: '14px 12px', color: '#9a9590' }}>
             no cards yet
           </div>
         ) : (
-          items.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              role="menuitem"
-              onClick={() => onCardClick(node.id)}
+          <>
+            <svg
+              width={MAP_WIDTH}
+              height={MAP_HEIGHT}
+              viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                width: '100%',
-                paddingLeft: 10 + node.depth * 14,
-                paddingRight: 10,
-                paddingTop: 7,
-                paddingBottom: 7,
-                background: 'none',
-                border: 'none',
-                borderRadius: 6,
-                font: 'inherit',
-                color: '#1a1a1a',
-                cursor: 'pointer',
-                textAlign: 'left',
-                WebkitTapHighlightColor: 'transparent',
+                display: 'block',
+                background: '#f7f6f2',
+                borderRadius: 8,
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = '#f3f2ee';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'none';
-              }}
+              role="img"
+              aria-label="Canvas mini-map"
             >
-              <span
-                aria-hidden
-                style={{
-                  flex: '0 0 auto',
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: node.role === 'user' ? '#2e6ecf' : '#1a1a1a',
-                  opacity: node.role === 'user' ? 1 : 0.5,
-                }}
-              />
-              <span
-                style={{
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: '1 1 auto',
-                }}
-                title={node.label}
-              >
-                {node.label}
-              </span>
-            </button>
-          ))
+              {/* Edges: parent → child centerline */}
+              <g stroke="rgba(26,26,26,0.22)" strokeWidth={1} fill="none">
+                {nodes.map((n) => {
+                  if (!n.parentId) return null;
+                  const p = byId.get(n.parentId);
+                  if (!p) return null;
+                  return (
+                    <line
+                      key={`e-${n.id}`}
+                      x1={p.cx}
+                      y1={p.cy}
+                      x2={n.cx}
+                      y2={n.cy}
+                    />
+                  );
+                })}
+              </g>
+              {/* Cards */}
+              {nodes.map((n) => {
+                const isActive = n.id === activeId;
+                const isFocused = n.id === focused;
+                return (
+                  <g
+                    key={n.id}
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => onCardClick(n.id)}
+                    onMouseEnter={() => setHoverId(n.id)}
+                    onMouseLeave={() =>
+                      setHoverId((c) => (c === n.id ? null : c))
+                    }
+                  >
+                    <rect
+                      x={n.x}
+                      y={n.y}
+                      width={n.w}
+                      height={n.h}
+                      rx={2}
+                      fill={
+                        n.role === 'user'
+                          ? isActive
+                            ? '#2e6ecf'
+                            : 'rgba(46,110,207,0.55)'
+                          : 'rgba(26,26,26,0.55)'
+                      }
+                      stroke={
+                        isFocused ? '#1a1a1a' : 'rgba(26,26,26,0.10)'
+                      }
+                      strokeWidth={isFocused ? 1.5 : 0.5}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+            <div
+              style={{
+                marginTop: 8,
+                padding: '6px 8px',
+                minHeight: 30,
+                background: '#f7f6f2',
+                borderRadius: 6,
+                color: focusNode ? '#1a1a1a' : '#9a9590',
+                lineHeight: 1.3,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={focusNode?.label ?? ''}
+            >
+              {focusNode ? (
+                <>
+                  <span
+                    aria-hidden
+                    style={{
+                      display: 'inline-block',
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background:
+                        focusNode.role === 'user' ? '#2e6ecf' : '#1a1a1a',
+                      opacity: focusNode.role === 'user' ? 1 : 0.55,
+                      marginRight: 8,
+                      verticalAlign: 'middle',
+                    }}
+                  />
+                  {focusNode.label}
+                </>
+              ) : (
+                'tap a card to read its title'
+              )}
+            </div>
+          </>
         )}
       </div>
     </>

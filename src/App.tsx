@@ -874,6 +874,15 @@ export function App() {
             shape={ctxMenu.shape}
             onNewConversation={() => { startNew(); setCtxMenu(null); }}
             onBranch={() => { if (ctxMenu.shape) branchFrom(ctxMenu.shape.id); setCtxMenu(null); }}
+            onCopy={() => {
+              if (!ctxMenu.shape) return;
+              const turn = useConversation
+                .getState()
+                .getTurn(ctxMenu.shape.id);
+              const text = turn?.content ?? '';
+              if (text) void navigator.clipboard?.writeText(text);
+              setCtxMenu(null);
+            }}
             onDelete={() => {
               if (ctxMenu.shape && confirm('Delete this card?')) deleteCard(ctxMenu.shape.id);
               setCtxMenu(null);
@@ -949,6 +958,7 @@ function RiverCtxMenu({
   shape,
   onNewConversation,
   onBranch,
+  onCopy,
   onDelete,
 }: {
   x: number;
@@ -956,6 +966,7 @@ function RiverCtxMenu({
   shape: CardShape | null;
   onNewConversation: () => void;
   onBranch: () => void;
+  onCopy: () => void;
   onDelete: () => void;
 }) {
   const menuW = 180;
@@ -1014,6 +1025,26 @@ function RiverCtxMenu({
               />
             </svg>
             Branch
+          </button>
+
+          <button
+            type="button"
+            style={CTX_ITEM}
+            disabled={!shape.props.content.trim()}
+            onMouseEnter={(e) => { (e.currentTarget.style.background = '#f3f2ee'); }}
+            onMouseLeave={(e) => { (e.currentTarget.style.background = 'none'); }}
+            onClick={onCopy}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M9 5h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM5 15V5a2 2 0 0 1 2-2h8"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Copy text
           </button>
 
           <button

@@ -29,6 +29,8 @@ interface ConversationStore {
   setChipQuestions: (id: TurnId, questions: Record<string, string>) => void;
   setPredictions: (id: TurnId, predictions: AgentPrediction[]) => void;
   togglePrediction: (id: TurnId, label: string) => void;
+  toggleChipSelected: (id: TurnId, term: string) => void;
+  clearChipsSelected: (id: TurnId) => void;
   removeSubtree: (rootId: TurnId) => TurnId[];
   reset: () => void;
 
@@ -129,6 +131,40 @@ export const useConversation = create<ConversationStore>()(
             ...t,
             meta: { ...t.meta, predictionsToggled: Array.from(cur) },
           },
+        },
+      };
+    });
+  },
+
+  toggleChipSelected: (id, term) => {
+    set((s) => {
+      const t = s.turns[id];
+      if (!t) return s;
+      const cur = new Set(t.meta.chipsSelected ?? []);
+      if (cur.has(term)) cur.delete(term);
+      else cur.add(term);
+      return {
+        turns: {
+          ...s.turns,
+          [id]: {
+            ...t,
+            meta: { ...t.meta, chipsSelected: Array.from(cur) },
+          },
+        },
+      };
+    });
+  },
+
+  clearChipsSelected: (id) => {
+    set((s) => {
+      const t = s.turns[id];
+      if (!t || !t.meta.chipsSelected || t.meta.chipsSelected.length === 0) {
+        return s;
+      }
+      return {
+        turns: {
+          ...s.turns,
+          [id]: { ...t, meta: { ...t.meta, chipsSelected: [] } },
         },
       };
     });

@@ -62,15 +62,6 @@ const AGENT_PALETTE: Record<
     border: '#9adcd2',
     ink: '#1f5252',
   },
-  // Chips pinned from inline [[term]] taps share the agent-pill pipeline. Use
-  // the same blue family as the inline chip border so the visual link to the
-  // source chip is obvious.
-  chip: {
-    tint: '#eef4ff',
-    solid: '#2e6ecf',
-    border: '#a8c8ff',
-    ink: '#1d3f7a',
-  },
 };
 
 export type CardShape = TLBaseShape<
@@ -213,9 +204,11 @@ function CardBody({ shape }: { shape: CardShape }) {
         {content
           ? renderWithBranchChips(
               content,
-              (shape.meta as { chipQuestions?: Record<string, string> })
-                ?.chipQuestions,
-              (term, question) => actions?.pinChip(term, question),
+              new Set(
+                (shape.meta as { chipsSelected?: string[] } | undefined)
+                  ?.chipsSelected ?? [],
+              ),
+              (term) => actions?.toggleChipSelected(shape.id, term),
             )
           : 'thinking…'}
         {streaming && <span className="river-cursor">▊</span>}
@@ -338,10 +331,14 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     activeToggled,
     togglePrediction,
   } = actions;
-  // Send is enabled when there's typed input OR at least one reflection pill
-  // is toggled — the pill row counts as input on its own.
+  // Send is enabled when there's typed input OR at least one selection
+  // (toggled agent pill or selected inline chip on any ancestor) — any of
+  // those count as input on their own.
   const canSend =
-    !busy && (input.trim().length > 0 || activeToggled.size > 0);
+    !busy &&
+    (input.trim().length > 0 ||
+      activeToggled.size > 0 ||
+      (actions.hasChipSelections ?? false));
 
   return (
     <HTMLContainer
@@ -502,16 +499,16 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Parse `[[term]]` markers inside assistant text. Tapping a chip pins it as
- * a pill on the active input card (does NOT branch). The chip's contextual
- * question (from card.meta.chipQuestions, populated by Haiku post-stream)
- * is the pill's hover text; the term is the pill's label. Pinned pills
- * share the toggle/send pipeline with agent predictions.
+ * Parse `[[term]]` markers inside assistant text. Tapping a chip toggles its
+ * selected state in-place on the source card (no branch, no pill movement).
+ * Selected chips fill blue; unselected stay outline. On submit, every
+ * selected chip across the active chain's ancestors rides forward as
+ * userContext (see App.tsx handleSubmit / runTurnFrom).
  */
 function renderWithBranchChips(
   text: string,
-  chipQuestions: Record<string, string> | undefined,
-  onChipClick: (term: string, question: string) => void,
+  selected: Set<string>,
+  onChipClick: (term: string) => void,
 ): React.ReactNode {
   const parts: React.ReactNode[] = [];
   const regex = /\[\[([^\[\]]+?)\]\]/g;
@@ -523,12 +520,12 @@ function renderWithBranchChips(
       parts.push(text.slice(lastIdx, match.index));
     }
     const term = match[1].trim();
-    const question = chipQuestions?.[term] || term;
     parts.push(
       <BranchChip
         key={`chip-${chipKey++}`}
         term={term}
-        onClick={() => onChipClick(term, question)}
+        on={selected.has(term)}
+        onClick={() => onChipClick(term)}
       />,
     );
     lastIdx = match.index + match[0].length;
@@ -539,26 +536,36 @@ function renderWithBranchChips(
   return parts;
 }
 
-function BranchChip({ term, onClick }: { term: string; onClick: () => void }) {
+function BranchChip({
+  term,
+  on,
+  onClick,
+}: {
+  term: string;
+  on: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
       onPointerDown={tap(onClick)}
-      title={`Pin to input: ${term}`}
+      aria-pressed={on}
+      title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
       style={{
         display: 'inline',
         padding: '1px 8px',
         margin: '0 1px',
-        background: '#fff',
-        border: '1px solid #a8c8ff',
-        color: '#2e6ecf',
+        background: on ? '#2e6ecf' : '#fff',
+        border: `1px solid ${on ? '#2e6ecf' : '#a8c8ff'}`,
+        color: on ? '#fff' : '#2e6ecf',
         borderRadius: 999,
         font: 'inherit',
         fontSize: 13,
-        fontWeight: 500,
+        fontWeight: on ? 600 : 500,
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 1.4,
+        transition: 'background 120ms, color 120ms',
       }}
     >
       {term}

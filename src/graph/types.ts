@@ -16,6 +16,11 @@ export interface TurnMeta {
   // Labels of predictions the user has toggled "on" for the next turn.
   // Stored as labels (not indices) so re-fetches don't desync.
   predictionsToggled?: string[];
+  // Inline chip terms the user has tapped on this card. Toggleable in-place
+  // (not moved to the input row). On submit, every selected chip across the
+  // active chain's ancestors rides forward as userContext using its
+  // chipQuestions[term] entry as the full sentence.
+  chipsSelected?: string[];
 }
 
 export interface Turn {

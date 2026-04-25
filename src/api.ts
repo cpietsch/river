@@ -4,10 +4,8 @@ export type MistCandidate = { label: string; full: string };
 
 // Each agent (assumption / skeptic / expander / …) produces predictions in
 // the same shape, tagged with its own id. The pill row colors itself by
-// `agent`, but toggling/sending is uniform across agents. `chip` is a
-// pseudo-agent: chip clicks inside assistant text pin themselves to the
-// input as pills, sharing the same toggle pipeline.
-export type AgentId = 'assumption' | 'skeptic' | 'expander' | 'chip';
+// `agent`, but toggling/sending is uniform across agents.
+export type AgentId = 'assumption' | 'skeptic' | 'expander';
 export type AgentPrediction = { agent: AgentId; label: string; full: string };
 
 // Backwards-compat alias — the assumption agent's output IS the old

@@ -13,10 +13,15 @@ export interface CardActions {
   // label's `full` sentence is sent as userContext on the next turn (or as
   // the user message itself when no text is typed).
   activeToggled: Set<string>;
+  // True when any inline chip is selected on any ancestor of the active
+  // card. The send button uses this to enable empty-input submission when
+  // chips alone are the user's intent.
+  hasChipSelections: boolean;
   branchFrom: (turnId: TLShapeId) => void;
-  // Pin a chip from inline assistant text as a pill on the active input.
-  // Tapping again removes it. Shares the toggle pipeline with agents.
-  pinChip: (term: string, question: string) => void;
+  // Toggle an inline [[term]] chip's selected state in-place on its card.
+  // On submit, every selected chip across the active chain's ancestors
+  // rides forward as userContext.
+  toggleChipSelected: (cardId: TLShapeId, term: string) => void;
   togglePrediction: (prediction: AgentPrediction) => void;
   toggleEmphasis: (turnId: TLShapeId) => void;
   deleteCard: (turnId: TLShapeId) => void;

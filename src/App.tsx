@@ -192,6 +192,37 @@ export function App() {
     };
   }, []);
 
+  // Toggle an inline [[term]] chip's selected state on its source card. The
+  // chip stays in-place; on submit, every selected chip across the active
+  // chain's ancestors rides forward as userContext (or as the user message
+  // when no text is typed).
+  const toggleChipSelected = useCallback(
+    (cardId: TurnId, term: string) => {
+      useConversation.getState().toggleChipSelected(cardId, term.trim());
+    },
+    [],
+  );
+
+  // Gather every selected chip across the active chain — `full` for each
+  // comes from that source card's chipQuestions[term].
+  const gatherSelectedChips = useCallback(
+    (leafId: TurnId): { full: string; cardId: TurnId; term: string }[] => {
+      const ancestors = useConversation.getState().getAncestors(leafId);
+      const out: { full: string; cardId: TurnId; term: string }[] = [];
+      for (const t of ancestors) {
+        const sel = t.meta.chipsSelected ?? [];
+        if (sel.length === 0) continue;
+        const qs = t.meta.chipQuestions ?? {};
+        for (const term of sel) {
+          const full = (qs[term] ?? term).trim();
+          if (full) out.push({ full, cardId: t.id, term });
+        }
+      }
+      return out;
+    },
+    [],
+  );
+
   const runTurnFrom = useCallback(
     async (
       userTurnId: TurnId,
@@ -220,18 +251,27 @@ export function App() {
         const emphasized = gatherEmphasized();
         const branchParentId = getParentId(userTurnId);
 
-        // userContext = labels the user has toggled on for this turn's parent.
-        // Skipped when the user's message IS those labels (sent via send-with-
-        // empty-input + toggled pills); otherwise the LLM sees them twice.
+        // userContext rides forward into the system prompt as "the user is
+        // carrying these implicit assumptions". Two sources merge:
+        //  - toggled agent pills on the parent assistant
+        //  - selected inline chips across the active chain's ancestors
+        // Skipped when those same items already form the user message
+        // (send-with-empty-input case); otherwise the LLM sees them twice.
         let userContext: string[] = [];
-        if (isFromActive && branchParentId && !opts.skipUserContext) {
-          const parent = store.getTurn(branchParentId);
-          const toggled = new Set(parent?.meta.predictionsToggled ?? []);
-          const refl = parent?.meta.predictions ?? [];
-          userContext = refl
-            .filter((p) => toggled.has(p.label.trim()))
-            .map((p) => p.full.trim())
-            .filter((s) => s.length > 0);
+        const selectedChips = isFromActive
+          ? gatherSelectedChips(userTurnId)
+          : [];
+        if (isFromActive && !opts.skipUserContext) {
+          if (branchParentId) {
+            const parent = store.getTurn(branchParentId);
+            const toggled = new Set(parent?.meta.predictionsToggled ?? []);
+            const refl = parent?.meta.predictions ?? [];
+            userContext = refl
+              .filter((p) => toggled.has(p.label.trim()))
+              .map((p) => p.full.trim())
+              .filter((s) => s.length > 0);
+          }
+          for (const c of selectedChips) userContext.push(c.full);
         }
 
         const cacheK =
@@ -262,6 +302,18 @@ export function App() {
           useConversation
             .getState()
             .setContent(assistantId, buffer, { streaming: false });
+        }
+
+        // Stream succeeded — chip selections fed forward, so clear them on
+        // every source card. Pills the user toggled would otherwise quietly
+        // ride into every subsequent turn until manually deselected.
+        if (isFromActive && selectedChips.length > 0) {
+          const seen = new Set<TurnId>();
+          for (const c of selectedChips) {
+            if (seen.has(c.cardId)) continue;
+            seen.add(c.cardId);
+            useConversation.getState().clearChipsSelected(c.cardId);
+          }
         }
 
         if (isFromActive) {
@@ -345,36 +397,48 @@ export function App() {
         setBusy(false);
       }
     },
-    [busy, activeId, historyFor, gatherEmphasized, getParentId, warmCache],
+    [
+      busy,
+      activeId,
+      historyFor,
+      gatherEmphasized,
+      getParentId,
+      warmCache,
+      gatherSelectedChips,
+    ],
   );
 
   const handleSubmit = useCallback(
     async (overrideText?: string) => {
       if (!activeId) return;
       let text = (overrideText ?? input).trim();
-      let usedTogglesAsMessage = false;
-      // Sending with an empty input is allowed when at least one reflection
-      // pill is toggled — the toggled pills' first-person sentences become
-      // the user's message. The pill row IS the input in that case.
+      let usedSelectionsAsMessage = false;
+      // Empty input is allowed if at least one selection (toggled pill OR
+      // selected chip) exists. Their `full` sentences become the user
+      // message; userContext is skipped to avoid duplication.
       if (!text) {
+        const parts: string[] = [];
         const parentId = getParentId(activeId);
         if (parentId) {
           const parent = useConversation.getState().getTurn(parentId);
           const toggled = new Set(parent?.meta.predictionsToggled ?? []);
           const refl = parent?.meta.predictions ?? [];
-          const selected = refl.filter((p) => toggled.has(p.label.trim()));
-          if (selected.length > 0) {
-            text = selected.map((p) => p.full.trim()).join(' ');
-            usedTogglesAsMessage = true;
+          for (const p of refl.filter((p) => toggled.has(p.label.trim()))) {
+            parts.push(p.full.trim());
           }
+        }
+        for (const c of gatherSelectedChips(activeId)) parts.push(c.full);
+        if (parts.length > 0) {
+          text = parts.filter((s) => s.length > 0).join(' ');
+          usedSelectionsAsMessage = true;
         }
         if (!text) return;
       }
       await runTurnFrom(activeId, text, {
-        skipUserContext: usedTogglesAsMessage,
+        skipUserContext: usedSelectionsAsMessage,
       });
     },
-    [activeId, input, runTurnFrom, getParentId],
+    [activeId, input, runTurnFrom, getParentId, gatherSelectedChips],
   );
 
   // Branching: createTurn under sourceId; the syncer wires up the arrow.
@@ -402,34 +466,6 @@ export function App() {
       if (newId) setActiveId(newId);
     },
     [createBranchUserTurn],
-  );
-
-  // Pin an inline [[term]] chip as a pill on the active input. Adds the
-  // prediction to the active card's parent if missing, then toggles it on.
-  // A second tap on the same chip toggles it off (it stays in the predictions
-  // list so the pill remains visible — un-pinning means "deselect", not
-  // "delete"). Wherever the chip lives in the conversation tree, the pill
-  // appears on the *current* input — the user is choosing what to ride
-  // forward, not branching off a past turn.
-  const pinChip = useCallback(
-    (term: string, question: string) => {
-      if (!activeId) return;
-      const parentId = getParentId(activeId);
-      if (!parentId) return;
-      const store = useConversation.getState();
-      const parent = store.getTurn(parentId);
-      if (!parent) return;
-      const existing = parent.meta.predictions ?? [];
-      const trimmed = term.trim();
-      if (!existing.some((p) => p.label === trimmed)) {
-        store.setPredictions(parentId, [
-          ...existing,
-          { agent: 'chip', label: trimmed, full: question.trim() || trimmed },
-        ]);
-      }
-      store.togglePrediction(parentId, trimmed);
-    },
-    [activeId, getParentId],
   );
 
   const togglePrediction = useCallback(
@@ -649,18 +685,34 @@ export function App() {
     () => new Set(activeToggledLabels),
     [activeToggledLabels],
   );
+  // Reactive: any chip selected on any ancestor of activeId. Walks once per
+  // store change; cheap because the chain is short and selection is rare.
+  const hasChipSelections = useConversation((s) => {
+    if (!activeId) return false;
+    let cur: TurnId | null = activeId;
+    const seen = new Set<TurnId>();
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const t: import('./graph/types').Turn | undefined = s.turns[cur];
+      if (!t) break;
+      if ((t.meta.chipsSelected ?? []).length > 0) return true;
+      cur = t.parentId;
+    }
+    return false;
+  });
 
   return (
     <CardActionsContext.Provider
       value={{
         branchFrom,
-        pinChip,
+        toggleChipSelected,
         togglePrediction,
         toggleEmphasis,
         deleteCard,
         activeId,
         activePredictions,
         activeToggled,
+        hasChipSelections,
         input,
         setInput,
         onInputChange,

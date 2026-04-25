@@ -30,26 +30,12 @@ export async function fetchAgentPredictions(
   }
 }
 
-// A selectable span identified inside any prose response. The `phrase`
-// appears verbatim in the source text; `question` is the contextual hover
-// sentence and the prompt the chip rides forward as.
+// A selectable span inside an assistant card's prose. The `phrase` appears
+// verbatim in the text; `question` is the prompt the chip rides forward as
+// when selected. Today both are computed locally by extractSpans (compromise
+// NLP); in the future the question could be enriched by a Haiku call for
+// richer hover tooltips.
 export type ChipSpan = { phrase: string; question: string };
-
-export async function fetchChipSpans(text: string): Promise<ChipSpan[]> {
-  if (!text.trim()) return [];
-  try {
-    const res = await fetch('/api/chip-spans', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { spans?: ChipSpan[] };
-    return data.spans ?? [];
-  } catch {
-    return [];
-  }
-}
 
 export async function fetchMist(input: string, history: ChatMessage[]): Promise<MistCandidate[]> {
   try {

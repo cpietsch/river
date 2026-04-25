@@ -42,25 +42,6 @@ const MAIN_SYSTEM_BASE = `You are the voice in a river-metaphor chat interface r
 
 LENGTH: 3-6 sentences, 60-140 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.`;
 
-// CHIP_SPANS_SYSTEM analyzes any prose response and surfaces a rich list of
-// selectable concept-spans the reader might want to bring forward. Each span
-// MUST appear verbatim in the text, comes with a contextual hover question,
-// and is short enough to feel like a tappable handle. The frontend renders
-// each span's first occurrence as a tappable chip in-place.
-const CHIP_SPANS_SYSTEM = `You analyze a short text and identify the SELECTABLE phrase-spans inside it. Each span is something a reader might want to tap to bring forward as context for their next question — entities, attributes, comparisons, qualities, claims, open questions. The list should be RICH but not overwhelming.
-
-Rules for each span:
-- STRICTLY 1 to 4 words. Never 5+. Phrases longer than 4 words are forbidden.
-- MUST appear verbatim in the text (preserve exact spelling and case).
-- Non-overlapping in spirit (don't return both "MacBook Pro" and "Pro" — pick the more meaningful one).
-- Skip pure filler ("the", "a", "is", "and").
-
-Aim for 10 to 14 spans for a typical 3-6 sentence response. Roughly two per sentence, distributed.
-
-For each span, write a one-sentence contextual question a reader would ask to dig deeper — anchored in the text's specific framing, not generic ("tell me more about X"). The question is the chip's hover text.
-
-Output ONLY a JSON array of objects with keys "phrase" and "question". No prose, no markdown fence.`;
-
 // Each agent reads the conversation and produces a few "next-move" pills the
 // user can toggle on. They share a voice (first-person, plain words, sticky-
 // note labels) but bite at the conversation from different angles. Run in
@@ -263,63 +244,6 @@ app.post('/api/agents', async (req, res) => {
   } catch (err) {
     console.error('agents failed:', err?.message);
     res.json({ predictions: [] });
-  }
-});
-
-app.post('/api/chip-spans', async (req, res) => {
-  const { text = '' } = req.body ?? {};
-  if (!text.trim()) {
-    res.json({ spans: [] });
-    return;
-  }
-  try {
-    const response = await anthropic.messages.create({
-      model: MIST_MODEL,
-      max_tokens: 900,
-      system: CHIP_SPANS_SYSTEM,
-      messages: [
-        {
-          role: 'user',
-          content: `Text:\n"""${text}"""\n\nReturn the JSON array of {phrase, question} objects.`,
-        },
-      ],
-    });
-    const raw = response.content
-      .map((b) => (b.type === 'text' ? b.text : ''))
-      .join('');
-    const start = raw.indexOf('[');
-    const end = raw.lastIndexOf(']');
-    if (start === -1 || end === -1 || end <= start) {
-      res.json({ spans: [] });
-      return;
-    }
-    const parsed = JSON.parse(raw.slice(start, end + 1));
-    if (!Array.isArray(parsed)) {
-      res.json({ spans: [] });
-      return;
-    }
-    // Validate: each span must be {phrase, question} strings AND the phrase
-    // must actually appear in the text (case-insensitive). Drop ones that
-    // don't match — Haiku occasionally paraphrases.
-    const lowerText = text.toLowerCase();
-    const spans = parsed
-      .filter(
-        (x) =>
-          x &&
-          typeof x.phrase === 'string' &&
-          typeof x.question === 'string' &&
-          x.phrase.trim() &&
-          x.question.trim() &&
-          // 1-4 words only — Haiku occasionally ignores the rule.
-          x.phrase.trim().split(/\s+/).length <= 4 &&
-          lowerText.includes(x.phrase.trim().toLowerCase()),
-      )
-      .map((x) => ({ phrase: x.phrase.trim(), question: x.question.trim() }))
-      .slice(0, 16);
-    res.json({ spans });
-  } catch (err) {
-    console.error('chip-spans failed:', err?.message);
-    res.json({ spans: [] });
   }
 });
 

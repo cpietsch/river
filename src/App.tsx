@@ -15,7 +15,6 @@ import {
 } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
-  fetchChipSpans,
   fetchAgentPredictions,
   streamGenerate,
   type ChatMessage,
@@ -23,6 +22,7 @@ import {
 } from './api';
 import { useConversation } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
+import { extractSpans } from './graph/extractSpans';
 import type { TurnId } from './graph/types';
 
 const shapeUtils = [CardShapeUtil];
@@ -349,20 +349,17 @@ export function App() {
           }
         }
 
-        // Chip spans (Haiku): identify selectable phrase-spans inside the
-        // assistant's prose along with each one's contextual hover question.
-        // The renderer wraps each span's first verbatim occurrence as a
-        // tappable chip. Universal — works on any topic without Sonnet
-        // having to author [[X]] markers.
-        fetchChipSpans(buffer)
-          .then((spans) => {
-            if (spans.length === 0) return;
-            useConversation.getState().setChipSpans(assistantId, spans);
-            if (precacheEnabledRef.current) {
-              warmCache(assistantId, spans.map((s) => s.question));
-            }
-          })
-          .catch(() => {});
+        // Chip spans (local): compromise NLP + regex backstops identify
+        // selectable phrases (noun phrases, named entities, hyphenated
+        // compounds, acronyms, numeric quantities) directly in the browser.
+        // Synchronous — chips render instantly when the stream finishes.
+        const spans = extractSpans(buffer);
+        if (spans.length > 0) {
+          useConversation.getState().setChipSpans(assistantId, spans);
+          if (precacheEnabledRef.current) {
+            warmCache(assistantId, spans.map((s) => s.question));
+          }
+        }
 
         // Reflections (Haiku) — populates assistant.meta.predictions, which
         // ActiveInputCard renders as the pill row.
@@ -586,15 +583,13 @@ export function App() {
           .getState()
           .setContent(assistantId, buffer, { streaming: false });
 
-        fetchChipSpans(buffer)
-          .then((spans) => {
-            if (spans.length === 0) return;
-            useConversation.getState().setChipSpans(assistantId, spans);
-            if (precacheEnabledRef.current) {
-              warmCache(assistantId, spans.map((s) => s.question));
-            }
-          })
-          .catch(() => {});
+        const spans = extractSpans(buffer);
+        if (spans.length > 0) {
+          useConversation.getState().setChipSpans(assistantId, spans);
+          if (precacheEnabledRef.current) {
+            warmCache(assistantId, spans.map((s) => s.question));
+          }
+        }
 
         const fullHistory = [
           ...history,
@@ -878,13 +873,13 @@ export function App() {
         .river-input-wrap ::-webkit-scrollbar { display: none; }
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
-        /* Inline chip — marker / highlighter metaphor. Unselected chips are
-           invisible: the prose reads as normal text, no dotted lines or
-           pill shapes. Hovering previews the stroke at low opacity so the
-           affordance is still discoverable. Selected styling is inline
-           (translucent yellow stroke). */
+        /* DEBUG: dotted underline on every selectable span so we can see
+           exactly what the extractor caught. Hover lifts the chip into a
+           pill preview. Restore the marker / highlighter visual once
+           coverage looks right. */
         .river-chip:not(.on):hover {
-          background: linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.30) 22%, rgba(252, 211, 64, 0.30) 92%, transparent 92%) !important;
+          background: rgba(46, 110, 207, 0.08) !important;
+          border-bottom: 1px solid #2e6ecf !important;
         }
         .tl-html-container button,
         .tl-html-container textarea,

@@ -574,37 +574,34 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // Marker / highlighter metaphor: selected text is "painted" with a
-  // translucent yellow stroke that lays behind the words (linear-gradient
-  // limits the band to the middle of the line so it reads like marker on
-  // paper, not a full background fill). Unselected chips are visually
-  // INVISIBLE — the prose reads as normal text — so the page stays calm
-  // until the user is actually marking something. Hovering reveals the
-  // stroke at low opacity so the affordance is still discoverable.
+  // DEBUG visual (matches what the local extractor finds): blue pill when
+  // selected, dotted blue underline when not. Once span coverage feels
+  // right we restore the marker / highlighter visual. Default state is
+  // intentionally NOT invisible here — the dotted line shows which words
+  // the extractor caught.
   return (
     <button
       type="button"
       className={on ? 'river-chip on' : 'river-chip'}
       onPointerDown={tap(onClick)}
       aria-pressed={on}
-      title={on ? `Marked: ${term} (tap to clear)` : `Mark: ${term}`}
+      title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
       style={{
         display: 'inline',
-        padding: 0,
-        margin: 0,
-        background: on
-          ? 'linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.75) 22%, rgba(252, 211, 64, 0.75) 92%, transparent 92%)'
-          : 'transparent',
+        padding: on ? '1px 8px' : '0 1px',
+        margin: '0 1px',
+        background: on ? '#2e6ecf' : 'transparent',
         border: 'none',
-        borderRadius: 0,
-        color: 'inherit',
+        borderRadius: on ? 999 : 0,
+        borderBottom: on ? 'none' : '1px dotted #2e6ecf',
+        color: on ? '#fff' : 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
-        fontWeight: 'inherit',
+        fontWeight: on ? 600 : 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
-        transition: 'background 140ms',
+        transition: 'background 120ms, color 120ms, border-color 120ms',
       }}
     >
       {term}

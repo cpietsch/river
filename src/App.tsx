@@ -642,6 +642,179 @@ export function App() {
     editor.centerOnPoint({ x: 0, y: 0 }, SMOOTH_CAMERA);
   }, []);
 
+  // Re-stream every assistant card on the canvas in canvas order, using each
+  // turn's regenerated history. Clears chipQuestions and any reflection cards
+  // bound to that assistant first so they re-spawn against the new content.
+  // Useful for testing prompt changes and comparing model variations.
+  const rerunSession = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor || busy) return;
+
+    const allCards = editor
+      .getCurrentPageShapes()
+      .filter((s): s is CardShape => s.type === 'card')
+      .map((s) => s as unknown as CardShape)
+      .filter((c) => c.props.layer === 'action');
+
+    // (user, assistant) pairs in canvas order. Top-down so each rerun sees a
+    // history of already-regenerated ancestors.
+    const userCards = allCards
+      .filter((c) => c.props.role === 'user' && c.props.content.trim() !== '')
+      .sort((a, b) => a.y - b.y || a.x - b.x);
+
+    type Pair = { userId: TLShapeId; assistantId: TLShapeId };
+    const pairs: Pair[] = [];
+    for (const u of userCards) {
+      const bindings = editor.getBindingsToShape(u.id, 'arrow');
+      for (const b of bindings) {
+        if (b.props.terminal !== 'start') continue;
+        const arrow = editor.getShape(b.fromId);
+        if (!arrow) continue;
+        const endBinding = editor
+          .getBindingsFromShape(arrow, 'arrow')
+          .find((x) => x.props.terminal === 'end');
+        if (!endBinding) continue;
+        const child = editor.getShape(
+          endBinding.toId as TLShapeId,
+        ) as unknown as CardShape | undefined;
+        if (child?.props.role === 'assistant') {
+          pairs.push({ userId: u.id, assistantId: child.id });
+          break;
+        }
+      }
+    }
+
+    if (pairs.length === 0) return;
+
+    // Stale precache + stale reflection arrows + stale chipQuestions across
+    // every assistant being rerun.
+    precacheRef.current.clear();
+    precacheInFlightRef.current.clear();
+    for (const { assistantId } of pairs) {
+      const reflArrows = editor
+        .getCurrentPageShapes()
+        .filter(
+          (s) =>
+            s.type === 'arrow' &&
+            (s.meta as { kind?: string } | undefined)?.kind === 'reflection',
+        );
+      const toDelete: TLShapeId[] = [];
+      for (const arrow of reflArrows) {
+        const startB = editor
+          .getBindingsFromShape(arrow, 'arrow')
+          .find((b) => b.props.terminal === 'start');
+        if (startB?.toId !== assistantId) continue;
+        const endB = editor
+          .getBindingsFromShape(arrow, 'arrow')
+          .find((b) => b.props.terminal === 'end');
+        toDelete.push(arrow.id);
+        if (endB) toDelete.push(endB.toId as TLShapeId);
+      }
+      if (toDelete.length) editor.deleteShapes(toDelete);
+    }
+
+    setBusy(true);
+    try {
+      for (const { userId, assistantId } of pairs) {
+        const userShape = editor.getShape(userId) as unknown as
+          | CardShape
+          | undefined;
+        if (!userShape) continue;
+        editor.updateShape({
+          id: assistantId,
+          type: 'card',
+          meta: {},
+          props: { content: '', streaming: true },
+        });
+        const history = historyFor(userId);
+        const emphasized = gatherEmphasized(editor);
+        let buffer = '';
+        try {
+          await streamGenerate(
+            userShape.props.content,
+            history.slice(0, -1),
+            (delta) => {
+              buffer += delta;
+              editor.updateShape({
+                id: assistantId,
+                type: 'card',
+                props: { content: buffer, streaming: true },
+              });
+            },
+            undefined,
+            emphasized,
+          );
+        } catch (err) {
+          editor.updateShape({
+            id: assistantId,
+            type: 'card',
+            props: {
+              content: `[error: ${(err as Error).message}]`,
+              streaming: false,
+            },
+          });
+          continue;
+        }
+        editor.updateShape({
+          id: assistantId,
+          type: 'card',
+          props: { content: buffer, streaming: false },
+        });
+
+        const chipTerms = Array.from(
+          new Set(
+            [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
+              m[1].trim(),
+            ),
+          ),
+        );
+        if (chipTerms.length > 0) {
+          fetchChipQuestions(buffer, chipTerms)
+            .then((questions) => {
+              const a = editor.getShape(assistantId) as unknown as
+                | CardShape
+                | undefined;
+              if (!a) return;
+              editor.updateShape({
+                id: assistantId,
+                type: 'card',
+                meta: { ...(a.meta ?? {}), chipQuestions: questions },
+              });
+              if (precacheEnabledRef.current) {
+                warmCache(assistantId, Object.values(questions));
+              }
+            })
+            .catch(() => {});
+        }
+
+        const fullHistory = [
+          ...history,
+          { role: 'assistant' as const, content: buffer },
+        ];
+        fetchReflections(fullHistory)
+          .then((presumptions) => {
+            spawnPresumptions(
+              editor,
+              assistantId,
+              presumptions,
+              reflectionsVisibleRef.current,
+            );
+            relayoutAll(editor);
+            if (precacheEnabledRef.current) {
+              const promotionPrompts = presumptions.map((p) => {
+                const label = p.label.trim();
+                return label.charAt(0).toLowerCase() + label.slice(1);
+              });
+              warmCache(assistantId, promotionPrompts);
+            }
+          })
+          .catch(() => {});
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, historyFor, warmCache]);
+
   function onInputChange(text: string): void {
     setInput(text);
   }
@@ -765,6 +938,44 @@ export function App() {
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
           </svg>
           new
+        </button>
+
+        <button
+          type="button"
+          onClick={rerunSession}
+          disabled={busy}
+          aria-label="Re-stream every assistant turn"
+          data-testid="rerun-session"
+          title="Re-run every turn in the canvas with the current prompt — useful for comparing variations and testing prompt changes."
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '10px 14px',
+            background: '#fff',
+            color: busy ? '#aaa' : '#111',
+            border: '1px solid #1a1a1a',
+            borderRadius: 999,
+            font: 'inherit',
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: busy ? 'default' : 'pointer',
+            opacity: busy ? 0.6 : 1,
+            boxShadow: '0 3px 10px rgba(0,0,0,0.1)',
+            WebkitTapHighlightColor: 'transparent',
+            minHeight: 40,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M3 12a9 9 0 0 1 15.5-6.3M21 12a9 9 0 0 1-15.5 6.3M21 4v5h-5M3 20v-5h5"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          rerun
         </button>
 
         <button

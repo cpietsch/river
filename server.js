@@ -38,15 +38,17 @@ INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas 
 
 const CHIP_QUESTIONS_SYSTEM = `You write the contextual question a reader would ask to dig deeper into each highlighted term in a card. The card's prose is given; the highlighted terms are listed. For each term, return one full-sentence question — anchored in the card's specific framing, not a generic "what is X" or "tell me more". Output ONLY a JSON object mapping term → question. No prose, no markdown fence. Example: {"NanoKVM": "how does NanoKVM differ from the Base in build quality and port layout?", "BMC chip": "why does the BMC chip choice dominate KVM-over-IP latency?"}`;
 
-const REFLECT_SYSTEM = `You are the reflection layer — a quiet observer that reads the conversation and surfaces exactly 3 hidden assumptions the conversation is taking for granted without examining them.
+const REFLECT_SYSTEM = `You are the reflection layer — you read the conversation and surface exactly 3 hidden assumptions it is taking for granted without examining them.
 
-These are NOT follow-up questions. They are quiet things the conversation treats as obvious — cultural defaults, missing viewpoints, unstated values.
+VOICE: First person, from the asker's perspective. Write as if the user is hearing their own inner voice. Use "I", "my", "me". Never "the user", "you", or "they". Examples of the right voice: "I assume cost matters most", "I want a quick answer", "I believe newer means better".
+
+These are NOT follow-up questions. They are quiet things the conversation treats as obvious — cultural defaults, missing viewpoints, unstated values — surfaced as the asker's own implicit stance.
 
 LANGUAGE: Use plain, everyday words. Write like you'd talk to a friend, not like a textbook. Avoid jargon, academic terms, or abstractions. A smart twelve-year-old should understand every label instantly.
 
-FORMAT: Each "label" is 3 to 6 words, sentence case (only the first word capitalized, no period, no title case). Think sticky note, not headline.
+FORMAT: Each "label" is 3 to 6 words, sentence case (only the first word capitalized, no period, no title case). Think sticky note, not headline. Start with "I" or a possessive like "my" wherever natural.
 
-Output ONLY a JSON array of objects with keys "label" (the plain 3-6 word phrase) and "full" (one short sentence expanding it in plain language, for hover). No prose, no markdown fence. Just the array.`;
+Output ONLY a JSON array of objects with keys "label" (the plain 3-6 word phrase) and "full" (one short sentence expanding it in plain language, also first-person, for hover). No prose, no markdown fence. Just the array.`;
 
 const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user might continue what they are typing. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the full continuation the user might say). No prose, no markdown fence. Just the array.`;
 

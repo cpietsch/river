@@ -89,7 +89,14 @@ const cardShapeProps: RecordProps<CardShape> = {
   streaming: T.boolean,
 };
 
-export const CARD_WIDTH = 540;
+// Card width — responsive. On wide screens use the comfortable 540px reading
+// width; on phones cap to the viewport minus a small margin so cards don't
+// extend past the right edge. Computed once at module load (resize doesn't
+// refit; a full refresh will).
+export const CARD_WIDTH =
+  typeof window !== 'undefined'
+    ? Math.min(540, Math.max(280, window.innerWidth - 24))
+    : 540;
 export const CARD_HEIGHT_MIN = 120;
 
 export class CardShapeUtil extends ShapeUtil<CardShape> {

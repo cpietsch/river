@@ -6,6 +6,11 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="theme-color" content="#f7f6f2" />
+  <!-- Lock light mode regardless of OS preferences. Without this, Android
+       Chrome's "Force Dark Mode" and iOS "Dark Website Appearance" can
+       invert the page or apply tldraw's dark skin via prefers-color-scheme. -->
+  <meta name="color-scheme" content="light" />
+  <meta name="supported-color-schemes" content="light" />
   <title>river — v2</title>
   <!-- Source Serif 4 for the body of assistant/user cards. Adobe's
        modern serif revival; covers regular + italic + bold so we can
@@ -22,6 +27,7 @@
       padding: 0;
       height: 100%;
       background: #f7f6f2;
+      color-scheme: light;
       overflow: hidden;
       /* Prevent pull-to-refresh and bounce scrolling on mobile */
       overscroll-behavior: none;
@@ -37,6 +43,10 @@
       -webkit-tap-highlight-color: transparent;
       -webkit-text-size-adjust: 100%;
     }
+    /* tldraw container background — injected at index.html level so
+       it's applied before React mounts. Otherwise on mobile the dark
+       default leaks through during the brief pre-React paint. */
+    .tl-container, .tl-background { background: #f7f6f2 !important; }
     /* Hide tldraw watermark in the prototype — this is a dev-only prototype, not a production deploy. */
     .tl-watermark_SEE-LICENSE { display: none !important; }
   </style>

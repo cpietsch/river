@@ -42,11 +42,9 @@ const MAIN_SYSTEM_BASE = `You are the voice in a river-metaphor chat interface r
 
 LENGTH: 3-6 sentences, 60-140 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.
 
-INLINE SELECTION-CHIPS: Wrap 3 to 5 selectable phrases per response in [[double brackets]]. The reader taps chips to mark "ride this forward" — selected chips become context for their next message. Pick the most distinctive entities or concepts; an augmentation pass adds more chips afterward, so don't try to mark every phrase yourself. Each chip is 1-5 words; never nest brackets.`;
+INLINE SELECTION-CHIPS: Wrap 4 to 6 selectable phrases per response in [[double brackets]]. The reader taps chips to mark "ride this forward" — selected chips become context for their next message. Pick the phrases the reader is most likely to want to dig into: distinctive entities AND important attributes/qualities/comparisons (e.g. [[build quality]], [[idle power draw]], [[total cost of ownership]]). Don't only wrap proper nouns. Each chip is 1-5 words; never nest brackets.`;
 
 const CHIP_QUESTIONS_SYSTEM = `You write the contextual question a reader would ask to dig deeper into each highlighted term in a card. The card's prose is given; the highlighted terms are listed. For each term, return one full-sentence question — anchored in the card's specific framing, not a generic "what is X" or "tell me more". Output ONLY a JSON object mapping term → question. No prose, no markdown fence. Example: {"NanoKVM": "how does NanoKVM differ from the Base in build quality and port layout?", "BMC chip": "why does the BMC chip choice dominate KVM-over-IP latency?"}`;
-
-const CHIPS_AUGMENT_SYSTEM = `You identify additional selectable phrases in a text. The reader can tap each one to bring it forward as context for their next question — so we want a RICH selection surface. Some phrases are already bracketed [[like this]]; suggest 5 to 8 ADDITIONAL phrases that aren't already bracketed. EVERY phrase MUST appear verbatim in the text (preserve exact spelling and case) AND be 1 to 4 words long — phrases longer than 4 words are not allowed. Aim for VARIETY: qualities, attributes, comparisons, tradeoffs — not just proper nouns. Output ONLY a JSON array of strings. No prose, no markdown fence.`;
 
 // Each agent reads the conversation and produces a few "next-move" pills the
 // user can toggle on. They share a voice (first-person, plain words, sticky-
@@ -298,49 +296,6 @@ app.post('/api/chip-questions', async (req, res) => {
   } catch (err) {
     console.error('chip-questions failed:', err?.message);
     res.json({ questions: {} });
-  }
-});
-
-app.post('/api/chips-augment', async (req, res) => {
-  const { text = '', existing = [] } = req.body ?? {};
-  if (!text.trim()) {
-    res.json({ phrases: [] });
-    return;
-  }
-  try {
-    const response = await anthropic.messages.create({
-      model: MIST_MODEL,
-      max_tokens: 350,
-      system: CHIPS_AUGMENT_SYSTEM,
-      messages: [
-        {
-          role: 'user',
-          content: `Text:\n"""${text}"""\n\nAlready bracketed: ${JSON.stringify(existing)}\n\nReturn 5 to 8 additional verbatim phrases as a JSON array of strings.`,
-        },
-      ],
-    });
-    const raw = response.content
-      .map((b) => (b.type === 'text' ? b.text : ''))
-      .join('');
-    const start = raw.indexOf('[');
-    const end = raw.lastIndexOf(']');
-    if (start === -1 || end === -1 || end <= start) {
-      res.json({ phrases: [] });
-      return;
-    }
-    const parsed = JSON.parse(raw.slice(start, end + 1));
-    if (!Array.isArray(parsed)) {
-      res.json({ phrases: [] });
-      return;
-    }
-    const phrases = parsed
-      .filter((s) => typeof s === 'string' && s.trim())
-      .map((s) => s.trim())
-      .slice(0, 10);
-    res.json({ phrases });
-  } catch (err) {
-    console.error('chips-augment failed:', err?.message);
-    res.json({ phrases: [] });
   }
 });
 

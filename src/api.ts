@@ -30,25 +30,6 @@ export async function fetchAgentPredictions(
   }
 }
 
-export async function fetchAugmentedChips(
-  text: string,
-  existing: string[],
-): Promise<string[]> {
-  if (!text.trim()) return [];
-  try {
-    const res = await fetch('/api/chips-augment', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, existing }),
-    });
-    if (!res.ok) return [];
-    const data = (await res.json()) as { phrases?: string[] };
-    return data.phrases ?? [];
-  } catch {
-    return [];
-  }
-}
-
 export async function fetchChipQuestions(
   cardContent: string,
   terms: string[],

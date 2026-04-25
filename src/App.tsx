@@ -66,6 +66,7 @@ export function App() {
   const labelInFlightRef = useRef(false);
   const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
   const archivedProjects = useConversation((s) => s.archive);
+  const activeSessionId = useConversation((s) => s.projectSessionId);
 
   // Bridge the store onto tldraw. Whenever the conversation graph changes,
   // syncer reflects it onto the canvas. Structural changes (turn created /
@@ -790,6 +791,26 @@ export function App() {
     [],
   );
 
+  // Drop the active project's Managed Agent session so the next turn mints
+  // a fresh one against the latest agent version. Keeps all canvas turns,
+  // loses the agent's intra-session memory + container state. Useful to
+  // shed accumulated kickoff bloat from earlier (pre-skinny) turns or to
+  // pick up a new agent version on an existing canvas.
+  const resetActiveSession = useCallback(() => {
+    const cur = useConversation.getState().projectSessionId;
+    if (!cur) return;
+    if (
+      !confirm(
+        'Reset this canvas\'s session? Your cards stay; the agent\'s working memory + container state will reset, and the next turn picks up the latest agent. Memory in /mnt/memory/ persists.',
+      )
+    ) {
+      return;
+    }
+    void deleteSession(cur);
+    useConversation.getState().setProjectSessionId(null);
+    logEvent('client.reset_session', { sessionId: cur });
+  }, []);
+
   function onInputChange(text: string): void {
     setInput(text);
   }
@@ -979,6 +1000,7 @@ export function App() {
           {projectsOpen && (
             <ProjectsMenu
               activeName={activeProjectName}
+              activeSessionId={activeSessionId}
               archive={archivedProjects}
               onClose={() => setProjectsOpen(false)}
               onNew={() => {
@@ -988,6 +1010,10 @@ export function App() {
               onResume={(id) => {
                 setProjectsOpen(false);
                 resumeProject(id);
+              }}
+              onResetSession={() => {
+                setProjectsOpen(false);
+                resetActiveSession();
               }}
               onDelete={deleteArchivedProject}
               onRename={renameArchivedProject}
@@ -1330,18 +1356,22 @@ function ProposalsPanel({
  */
 function ProjectsMenu({
   activeName,
+  activeSessionId,
   archive,
   onClose,
   onNew,
   onResume,
+  onResetSession,
   onDelete,
   onRename,
 }: {
   activeName: string;
+  activeSessionId: string | null;
   archive: import('./graph/store').ArchivedProject[];
   onClose: () => void;
   onNew: () => void;
   onResume: (id: string) => void;
+  onResetSession: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
@@ -1473,6 +1503,42 @@ function ProjectsMenu({
           >
             active
           </span>
+          {activeSessionId && (
+            <button
+              type="button"
+              onClick={onResetSession}
+              aria-label="Reset this canvas's agent session"
+              title="Drop the current Managed Agent session and start fresh on the next turn. Cards stay; agent's working memory + container reset."
+              style={{
+                flex: '0 0 auto',
+                border: 'none',
+                background: 'none',
+                padding: 4,
+                cursor: 'pointer',
+                color: '#6b6660',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 4,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#1a1a1a';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = '#6b6660';
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M3 12a9 9 0 0 1 15.5-6.3M21 12a9 9 0 0 1-15.5 6.3M21 4v5h-5M3 20v-5h5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
         </div>
 
         {archive.length === 0 ? (

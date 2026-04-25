@@ -9,7 +9,7 @@ import {
 } from 'tldraw';
 import { useCardActions } from './CardActions';
 import type { ChipSpan } from './api';
-import { stripMarkdown } from './graph/markdown';
+import { parseBlocks, stripMarkdown } from './graph/markdown';
 
 // Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
 // synthesized click on touchend often never fires on the button — so onClick
@@ -199,7 +199,6 @@ function CardBody({ shape }: { shape: CardShape }) {
           // Generous breathing room top + sides; bottom keeps space for the
           // floating icon row.
           padding: '18px 22px 42px 22px',
-          whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
           fontSize: 16,
           lineHeight: 1.65,
@@ -209,7 +208,7 @@ function CardBody({ shape }: { shape: CardShape }) {
         }}
       >
         {content
-          ? renderWithChipSpans(
+          ? renderContentBlocks(
               content,
               (shape.meta as { chipSpans?: ChipSpan[] } | undefined)
                 ?.chipSpans ?? [],
@@ -218,9 +217,10 @@ function CardBody({ shape }: { shape: CardShape }) {
                   ?.chipsSelected ?? [],
               ),
               (phrase) => actions?.toggleChipSelected(shape.id, phrase),
+              streaming,
             )
           : 'thinking…'}
-        {streaming && <span className="river-cursor">▊</span>}
+        {!content && streaming && <span className="river-cursor">▊</span>}
       </div>
 
       {/* Action icons: same two on every card (branch + like), bottom-right so
@@ -553,6 +553,91 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     </div>
     </HTMLContainer>
   );
+}
+
+/**
+ * Top-level renderer: parses the raw assistant text into block-level
+ * elements (paragraphs and tables) and renders each with appropriate
+ * spacing. Chips and emphasis are applied inside paragraph blocks via
+ * renderWithChipSpans; tables render as plain styled rows. The streaming
+ * cursor lands at the end of the last paragraph if streaming.
+ */
+function renderContentBlocks(
+  raw: string,
+  spans: ChipSpan[],
+  selected: Set<string>,
+  onChipClick: (phrase: string) => void,
+  streaming: boolean,
+): React.ReactNode {
+  const blocks = parseBlocks(raw);
+  if (blocks.length === 0) return null;
+  return blocks.map((block, idx) => {
+    const isLast = idx === blocks.length - 1;
+    if (block.kind === 'paragraph') {
+      return (
+        <p
+          key={`p-${idx}`}
+          style={{
+            margin: 0,
+            marginBottom: isLast ? 0 : '0.85em',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {renderWithChipSpans(block.text, spans, selected, onChipClick)}
+          {isLast && streaming && <span className="river-cursor">▊</span>}
+        </p>
+      );
+    }
+    // Table block.
+    return (
+      <table
+        key={`t-${idx}`}
+        style={{
+          borderCollapse: 'collapse',
+          marginTop: idx === 0 ? 0 : '0.85em',
+          marginBottom: isLast ? 0 : '0.85em',
+          fontSize: '0.95em',
+          width: '100%',
+        }}
+      >
+        <thead>
+          <tr>
+            {block.header.map((h, i) => (
+              <th
+                key={`th-${i}`}
+                style={{
+                  textAlign: 'left',
+                  padding: '6px 10px',
+                  borderBottom: '1.5px solid #1a1a1a',
+                  fontWeight: 600,
+                }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, ri) => (
+            <tr key={`tr-${ri}`}>
+              {row.map((cell, ci) => (
+                <td
+                  key={`td-${ci}`}
+                  style={{
+                    padding: '6px 10px',
+                    borderBottom: '1px solid rgba(0,0,0,0.08)',
+                    verticalAlign: 'top',
+                  }}
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  });
 }
 
 /**

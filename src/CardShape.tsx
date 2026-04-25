@@ -310,10 +310,12 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
   const input = actions?.input ?? '';
   const resizeActive = actions?.resizeActive;
   const reflections = actions?.activePredictions ?? [];
+  const chipCount = actions?.chipSelectionCount ?? 0;
 
   // Measure the actual content height so the growing textarea feeds a correct
   // card height — no scrollbar, no wasted space. Re-runs when reflection
-  // pills land or change so the card grows to fit them.
+  // pills land/change OR when the in-text selection counter pill appears,
+  // so the card always grows to fit its content.
   useLayoutEffect(() => {
     const ta = taRef.current;
     const root = rootRef.current;
@@ -323,7 +325,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     const measured = root.scrollHeight;
     if (measured <= 0) return; // culled/unmounted — leave stored height alone
     resizeActive(measured);
-  }, [input, resizeActive, reflections]);
+  }, [input, resizeActive, reflections, chipCount]);
 
   if (!actions) return null;
   const {

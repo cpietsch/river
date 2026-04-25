@@ -88,7 +88,7 @@ const cardShapeProps: RecordProps<CardShape> = {
   streaming: T.boolean,
 };
 
-export const CARD_WIDTH = 400;
+export const CARD_WIDTH = 540;
 export const CARD_HEIGHT_MIN = 120;
 
 export class CardShapeUtil extends ShapeUtil<CardShape> {
@@ -180,10 +180,11 @@ function CardBody({ shape }: { shape: CardShape }) {
         border: `${emphWidth}px solid ${emphBorder}`,
         borderRadius: 10,
         color: '#1a1a1a',
-        // Body uses a serif stack for long-form reading rhythm; the
-        // surrounding UI chrome (toolbar, pills, input) keeps sans-serif.
+        // Body uses Source Serif 4 (loaded in index.html) for long-form
+        // reading rhythm; the surrounding UI chrome (toolbar, pills,
+        // input) keeps sans-serif.
         fontFamily:
-          '"Charter", "Iowan Old Style", "Source Serif Pro", "Source Serif", "Georgia", "Times New Roman", serif',
+          '"Source Serif 4", "Source Serif Pro", "Charter", "Iowan Old Style", "Georgia", "Times New Roman", serif',
         fontSize: 16,
         lineHeight: 1.65,
         overflow: 'hidden',

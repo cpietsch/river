@@ -62,6 +62,15 @@ const AGENT_PALETTE: Record<
     border: '#9adcd2',
     ink: '#1f5252',
   },
+  // Chips pinned from inline [[term]] taps share the agent-pill pipeline. Use
+  // the same blue family as the inline chip border so the visual link to the
+  // source chip is obvious.
+  chip: {
+    tint: '#eef4ff',
+    solid: '#2e6ecf',
+    border: '#a8c8ff',
+    ink: '#1d3f7a',
+  },
 };
 
 export type CardShape = TLBaseShape<
@@ -206,7 +215,7 @@ function CardBody({ shape }: { shape: CardShape }) {
               content,
               (shape.meta as { chipQuestions?: Record<string, string> })
                 ?.chipQuestions,
-              (prompt) => actions?.branchAbout(shape.id, prompt),
+              (term, question) => actions?.pinChip(term, question),
             )
           : 'thinking…'}
         {streaming && <span className="river-cursor">▊</span>}
@@ -493,18 +502,16 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Parse `[[term]]` markers inside assistant text and render each as a tappable
- * branch chip. After the main stream completes, App fetches a contextual
- * question for each term via Haiku and stores the map in the card's meta as
- * `chipQuestions`. The chip's click handler uses the question if available,
- * else falls back to the bare term (which still works because the main model
- * has the full conversation history). Incomplete markers mid-stream stay as
- * plain text until the closing `]]` arrives.
+ * Parse `[[term]]` markers inside assistant text. Tapping a chip pins it as
+ * a pill on the active input card (does NOT branch). The chip's contextual
+ * question (from card.meta.chipQuestions, populated by Haiku post-stream)
+ * is the pill's hover text; the term is the pill's label. Pinned pills
+ * share the toggle/send pipeline with agent predictions.
  */
 function renderWithBranchChips(
   text: string,
   chipQuestions: Record<string, string> | undefined,
-  onChipClick: (prompt: string) => void,
+  onChipClick: (term: string, question: string) => void,
 ): React.ReactNode {
   const parts: React.ReactNode[] = [];
   const regex = /\[\[([^\[\]]+?)\]\]/g;
@@ -516,12 +523,12 @@ function renderWithBranchChips(
       parts.push(text.slice(lastIdx, match.index));
     }
     const term = match[1].trim();
-    const prompt = chipQuestions?.[term] || term;
+    const question = chipQuestions?.[term] || term;
     parts.push(
       <BranchChip
         key={`chip-${chipKey++}`}
         term={term}
-        onClick={() => onChipClick(prompt)}
+        onClick={() => onChipClick(term, question)}
       />,
     );
     lastIdx = match.index + match[0].length;
@@ -537,7 +544,7 @@ function BranchChip({ term, onClick }: { term: string; onClick: () => void }) {
     <button
       type="button"
       onPointerDown={tap(onClick)}
-      title={`Branch: ${term}`}
+      title={`Pin to input: ${term}`}
       style={{
         display: 'inline',
         padding: '1px 8px',

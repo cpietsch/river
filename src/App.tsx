@@ -404,13 +404,32 @@ export function App() {
     [createBranchUserTurn],
   );
 
-  const branchAbout = useCallback(
-    (sourceId: TurnId, prompt: string) => {
-      const newId = createBranchUserTurn(sourceId);
-      if (!newId) return;
-      void runTurnFrom(newId, prompt);
+  // Pin an inline [[term]] chip as a pill on the active input. Adds the
+  // prediction to the active card's parent if missing, then toggles it on.
+  // A second tap on the same chip toggles it off (it stays in the predictions
+  // list so the pill remains visible — un-pinning means "deselect", not
+  // "delete"). Wherever the chip lives in the conversation tree, the pill
+  // appears on the *current* input — the user is choosing what to ride
+  // forward, not branching off a past turn.
+  const pinChip = useCallback(
+    (term: string, question: string) => {
+      if (!activeId) return;
+      const parentId = getParentId(activeId);
+      if (!parentId) return;
+      const store = useConversation.getState();
+      const parent = store.getTurn(parentId);
+      if (!parent) return;
+      const existing = parent.meta.predictions ?? [];
+      const trimmed = term.trim();
+      if (!existing.some((p) => p.label === trimmed)) {
+        store.setPredictions(parentId, [
+          ...existing,
+          { agent: 'chip', label: trimmed, full: question.trim() || trimmed },
+        ]);
+      }
+      store.togglePrediction(parentId, trimmed);
     },
-    [createBranchUserTurn, runTurnFrom],
+    [activeId, getParentId],
   );
 
   const togglePrediction = useCallback(
@@ -635,7 +654,7 @@ export function App() {
     <CardActionsContext.Provider
       value={{
         branchFrom,
-        branchAbout,
+        pinChip,
         togglePrediction,
         toggleEmphasis,
         deleteCard,

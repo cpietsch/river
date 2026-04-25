@@ -14,7 +14,9 @@ export interface CardActions {
   // the user message itself when no text is typed).
   activeToggled: Set<string>;
   branchFrom: (turnId: TLShapeId) => void;
-  branchAbout: (turnId: TLShapeId, term: string) => void;
+  // Pin a chip from inline assistant text as a pill on the active input.
+  // Tapping again removes it. Shares the toggle pipeline with agents.
+  pinChip: (term: string, question: string) => void;
   togglePrediction: (prediction: AgentPrediction) => void;
   toggleEmphasis: (turnId: TLShapeId) => void;
   deleteCard: (turnId: TLShapeId) => void;

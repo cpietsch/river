@@ -2,18 +2,29 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
 export type MistCandidate = { label: string; full: string };
 
+// Each agent (assumption / skeptic / expander / …) produces predictions in
+// the same shape, tagged with its own id. The pill row colors itself by
+// `agent`, but toggling/sending is uniform across agents.
+export type AgentId = 'assumption' | 'skeptic' | 'expander';
+export type AgentPrediction = { agent: AgentId; label: string; full: string };
+
+// Backwards-compat alias — the assumption agent's output IS the old
+// Presumption shape (sans the `agent` tag).
 export type Presumption = { label: string; full: string };
 
-export async function fetchReflections(history: ChatMessage[]): Promise<Presumption[]> {
+export async function fetchAgentPredictions(
+  history: ChatMessage[],
+  agents?: AgentId[],
+): Promise<AgentPrediction[]> {
   try {
-    const res = await fetch('/api/reflect', {
+    const res = await fetch('/api/agents', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ history }),
+      body: JSON.stringify({ history, agents }),
     });
     if (!res.ok) return [];
-    const data = (await res.json()) as { presumptions?: Presumption[] };
-    return data.presumptions ?? [];
+    const data = (await res.json()) as { predictions?: AgentPrediction[] };
+    return data.predictions ?? [];
   } catch {
     return [];
   }

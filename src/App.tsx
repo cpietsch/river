@@ -16,10 +16,10 @@ import {
 import { CardActionsContext } from './CardActions';
 import {
   fetchChipQuestions,
-  fetchReflections,
+  fetchAgentPredictions,
   streamGenerate,
   type ChatMessage,
-  type Presumption,
+  type AgentPrediction,
 } from './api';
 import { useConversation } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
@@ -43,7 +43,7 @@ interface CtxMenu {
   shape: CardShape | null;
 }
 
-const EMPTY_REFLECTIONS: Presumption[] = [];
+const EMPTY_PREDICTIONS: AgentPrediction[] = [];
 const EMPTY_TOGGLED_LABELS: string[] = [];
 
 export function App() {
@@ -226,8 +226,8 @@ export function App() {
         let userContext: string[] = [];
         if (isFromActive && branchParentId && !opts.skipUserContext) {
           const parent = store.getTurn(branchParentId);
-          const toggled = new Set(parent?.meta.reflectionsToggled ?? []);
-          const refl = parent?.meta.reflections ?? [];
+          const toggled = new Set(parent?.meta.predictionsToggled ?? []);
+          const refl = parent?.meta.predictions ?? [];
           userContext = refl
             .filter((p) => toggled.has(p.label.trim()))
             .map((p) => p.full.trim())
@@ -315,19 +315,19 @@ export function App() {
             .catch(() => {});
         }
 
-        // Reflections (Haiku) — populates assistant.meta.reflections, which
+        // Reflections (Haiku) — populates assistant.meta.predictions, which
         // ActiveInputCard renders as the pill row.
         const fullHistory = [
           ...history,
           { role: 'assistant' as const, content: buffer },
         ];
-        fetchReflections(fullHistory)
-          .then((presumptions) => {
-            useConversation.getState().setReflections(assistantId, presumptions);
+        fetchAgentPredictions(fullHistory)
+          .then((predictions) => {
+            useConversation.getState().setPredictions(assistantId, predictions);
             if (precacheEnabledRef.current) {
               warmCache(
                 assistantId,
-                presumptions.map((p) => p.label.trim()),
+                predictions.map((p) => p.label.trim()),
               );
             }
           })
@@ -360,8 +360,8 @@ export function App() {
         const parentId = getParentId(activeId);
         if (parentId) {
           const parent = useConversation.getState().getTurn(parentId);
-          const toggled = new Set(parent?.meta.reflectionsToggled ?? []);
-          const refl = parent?.meta.reflections ?? [];
+          const toggled = new Set(parent?.meta.predictionsToggled ?? []);
+          const refl = parent?.meta.predictions ?? [];
           const selected = refl.filter((p) => toggled.has(p.label.trim()));
           if (selected.length > 0) {
             text = selected.map((p) => p.full.trim()).join(' ');
@@ -413,12 +413,12 @@ export function App() {
     [createBranchUserTurn, runTurnFrom],
   );
 
-  const toggleReflection = useCallback(
-    (p: Presumption) => {
+  const togglePrediction = useCallback(
+    (p: AgentPrediction) => {
       if (!activeId) return;
       const parentId = getParentId(activeId);
       if (!parentId) return;
-      useConversation.getState().toggleReflection(parentId, p.label.trim());
+      useConversation.getState().togglePrediction(parentId, p.label.trim());
     },
     [activeId, getParentId],
   );
@@ -558,15 +558,15 @@ export function App() {
           ...history,
           { role: 'assistant' as const, content: buffer },
         ];
-        fetchReflections(fullHistory)
-          .then((presumptions) => {
+        fetchAgentPredictions(fullHistory)
+          .then((predictions) => {
             useConversation
               .getState()
-              .setReflections(assistantId, presumptions);
+              .setPredictions(assistantId, predictions);
             if (precacheEnabledRef.current) {
               warmCache(
                 assistantId,
-                presumptions.map((p) => p.label.trim()),
+                predictions.map((p) => p.label.trim()),
               );
             }
           })
@@ -612,18 +612,18 @@ export function App() {
   // Subscribe to the parent assistant's reflections + toggled labels via the
   // store. Shallow-equal selectors keep references stable so ActiveInputCard
   // doesn't re-measure on unrelated turns' content streaming.
-  const activeReflections = useConversation((s) => {
-    if (!activeId) return EMPTY_REFLECTIONS;
+  const activePredictions = useConversation((s) => {
+    if (!activeId) return EMPTY_PREDICTIONS;
     const t = s.turns[activeId];
-    if (!t || !t.parentId) return EMPTY_REFLECTIONS;
-    return s.turns[t.parentId]?.meta.reflections ?? EMPTY_REFLECTIONS;
+    if (!t || !t.parentId) return EMPTY_PREDICTIONS;
+    return s.turns[t.parentId]?.meta.predictions ?? EMPTY_PREDICTIONS;
   });
   const activeToggledLabels = useConversation((s) => {
     if (!activeId) return EMPTY_TOGGLED_LABELS;
     const t = s.turns[activeId];
     if (!t || !t.parentId) return EMPTY_TOGGLED_LABELS;
     return (
-      s.turns[t.parentId]?.meta.reflectionsToggled ?? EMPTY_TOGGLED_LABELS
+      s.turns[t.parentId]?.meta.predictionsToggled ?? EMPTY_TOGGLED_LABELS
     );
   });
   const activeToggled = useMemo(
@@ -636,11 +636,11 @@ export function App() {
       value={{
         branchFrom,
         branchAbout,
-        toggleReflection,
+        togglePrediction,
         toggleEmphasis,
         deleteCard,
         activeId,
-        activeReflections,
+        activePredictions,
         activeToggled,
         input,
         setInput,

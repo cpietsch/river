@@ -36,6 +36,34 @@ function tap(
   };
 }
 
+// Color palette per agent: pills are color-coded so the user can read which
+// perspective a prediction comes from without an extra label. `tint` is the
+// off-state background, `solid` is the on-state background, `border` and
+// `ink` keep enough contrast to read on cream/white card backgrounds.
+const AGENT_PALETTE: Record<
+  string,
+  { tint: string; solid: string; border: string; ink: string }
+> = {
+  assumption: {
+    tint: '#faf4ff',
+    solid: '#8a5cc4',
+    border: '#c8a8e8',
+    ink: '#4a2d6b',
+  },
+  skeptic: {
+    tint: '#fff5e9',
+    solid: '#c47a2d',
+    border: '#e8c39a',
+    ink: '#6b452a',
+  },
+  expander: {
+    tint: '#e9faf7',
+    solid: '#2d8a8a',
+    border: '#9adcd2',
+    ink: '#1f5252',
+  },
+};
+
 export type CardShape = TLBaseShape<
   'card',
   {
@@ -276,7 +304,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 
   const input = actions?.input ?? '';
   const resizeActive = actions?.resizeActive;
-  const reflections = actions?.activeReflections ?? [];
+  const reflections = actions?.activePredictions ?? [];
 
   // Measure the actual content height so the growing textarea feeds a correct
   // card height — no scrollbar, no wasted space. Re-runs when reflection
@@ -297,9 +325,9 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     onInputChange,
     submit,
     busy,
-    activeReflections,
+    activePredictions,
     activeToggled,
-    toggleReflection,
+    togglePrediction,
   } = actions;
   // Send is enabled when there's typed input OR at least one reflection pill
   // is toggled — the pill row counts as input on its own.
@@ -337,7 +365,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
           the next /api/generate call. Multiple selections are supported.
           Filled lavender = on, outline = off. Title attr exposes the full
           sentence for hover. */}
-      {activeReflections.length > 0 && (
+      {activePredictions.length > 0 && (
         <div
           style={{
             display: 'flex',
@@ -345,22 +373,23 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
             gap: 4,
           }}
         >
-          {activeReflections.map((p, i) => {
+          {activePredictions.map((p, i) => {
             const on = activeToggled.has(p.label.trim());
+            const palette = AGENT_PALETTE[p.agent] ?? AGENT_PALETTE.assumption;
             return (
               <button
-                key={`refl-${i}`}
+                key={`pred-${i}`}
                 type="button"
-                title={p.full}
+                title={`${p.agent}: ${p.full}`}
                 aria-pressed={on}
-                onPointerDown={tap(() => toggleReflection(p))}
+                onPointerDown={tap(() => togglePrediction(p))}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
                   padding: '4px 10px',
-                  background: on ? '#8a5cc4' : '#faf4ff',
-                  border: `1px solid ${on ? '#8a5cc4' : '#c8a8e8'}`,
-                  color: on ? '#fff' : '#4a2d6b',
+                  background: on ? palette.solid : palette.tint,
+                  border: `1px solid ${on ? palette.solid : palette.border}`,
+                  color: on ? '#fff' : palette.ink,
                   borderRadius: 999,
                   font: 'inherit',
                   fontSize: 12,

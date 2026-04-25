@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { createShapeId } from 'tldraw';
-import type { Presumption } from '../api';
+import type { AgentPrediction } from '../api';
 import type { Turn, TurnId, TurnMeta, TurnRole } from './types';
 
 interface NewTurnInit {
@@ -27,8 +27,8 @@ interface ConversationStore {
   setStreaming: (id: TurnId, streaming: boolean) => void;
   setEmphasis: (id: TurnId, emphasis: number) => void;
   setChipQuestions: (id: TurnId, questions: Record<string, string>) => void;
-  setReflections: (id: TurnId, presumptions: Presumption[]) => void;
-  toggleReflection: (id: TurnId, label: string) => void;
+  setPredictions: (id: TurnId, predictions: AgentPrediction[]) => void;
+  togglePrediction: (id: TurnId, label: string) => void;
   removeSubtree: (rootId: TurnId) => TurnId[];
   reset: () => void;
 
@@ -102,24 +102,24 @@ export const useConversation = create<ConversationStore>()(
     });
   },
 
-  setReflections: (id, reflections) => {
+  setPredictions: (id, predictions) => {
     set((s) => {
       const t = s.turns[id];
       if (!t) return s;
       return {
         turns: {
           ...s.turns,
-          [id]: { ...t, meta: { ...t.meta, reflections } },
+          [id]: { ...t, meta: { ...t.meta, predictions } },
         },
       };
     });
   },
 
-  toggleReflection: (id, label) => {
+  togglePrediction: (id, label) => {
     set((s) => {
       const t = s.turns[id];
       if (!t) return s;
-      const cur = new Set(t.meta.reflectionsToggled ?? []);
+      const cur = new Set(t.meta.predictionsToggled ?? []);
       if (cur.has(label)) cur.delete(label);
       else cur.add(label);
       return {
@@ -127,7 +127,7 @@ export const useConversation = create<ConversationStore>()(
           ...s.turns,
           [id]: {
             ...t,
-            meta: { ...t.meta, reflectionsToggled: Array.from(cur) },
+            meta: { ...t.meta, predictionsToggled: Array.from(cur) },
           },
         },
       };

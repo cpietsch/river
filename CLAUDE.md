@@ -22,7 +22,7 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 
 ### App + UI
 
-- `src/App.tsx` — owns the editor ref, transient UI state (active input, busy, ctxMenu, precache toggle), and ALL graph mutations. Read paths use store selectors. Layout (`relayoutAll` tidy-tree, `repositionChain` after height changes) walks the graph store, not arrow bindings. Wires the `CardActionsContext` provider.
+- `src/App.tsx` — owns the editor ref, transient UI state (active input, busy, ctxMenu, mapText), and ALL graph mutations. Read paths use store selectors. Layout (`relayoutAll` tidy-tree, `repositionChain` after height changes) walks the graph store, not arrow bindings. Wires the `CardActionsContext` provider.
 - `src/CardShape.tsx` — custom tldraw `ShapeUtil` for `card`. Renders user/assistant cards with serif body. The active empty user card short-circuits to `<ActiveInputCard>` (the chat input). Markdown emphasis + chip spans are rendered via `renderContentBlocks` → `renderWithChipSpans`. Inline chips toggle in-place (no branching).
 - `src/CardActions.tsx` — React Context interface bridging App to deeply-nested card UI.
 - `src/api.ts` — fetch wrappers: `streamGenerate` (SSE), `fetchAgentPredictions`. Types: `ChipSpan`, `AgentPrediction`, `AgentId`.
@@ -84,7 +84,5 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 
 - `START_SEED = 'LUCKFOX PicoKVM Base vs NanoKVM'` — pre-fills the input on a fresh session for fast iteration.
 - `(window as any).__editor__` — dev handle exposed in `handleMount`. Remove before shipping.
-- `precache` toggle in the toolbar — when on, every turn fires background main-model calls for each chip / presumption so subsequent clicks render instantly. Off by default (costs ~6 extra Sonnet calls per turn).
-- `rerun` toolbar button — re-streams every assistant in the graph using the regenerated history; useful for testing prompt changes.
 - `npx tsx src/graph/extractSpans.test.ts` — runs the local extractor on five sample topics (tech, cooking, history, philosophy, biology) and prints the spans. Useful when tuning coverage.
 - `scratch/` — mobile screenshots from prior iterations; not used at runtime.

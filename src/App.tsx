@@ -61,18 +61,6 @@ export function App() {
   const [mapText, setMapText] = useState<string | null>(null);
   const [mapBusy, setMapBusy] = useState(false);
 
-  // Precache toggle: when on, every chip / presumption fires a background
-  // main-model call so clicks land instantly. Cache key = `${parentId}::${prompt}`.
-  const [precacheEnabled, setPrecacheEnabled] = useState(false);
-  const precacheEnabledRef = useRef(false);
-  useEffect(() => {
-    precacheEnabledRef.current = precacheEnabled;
-  }, [precacheEnabled]);
-  const precacheRef = useRef<Map<string, string>>(new Map());
-  const precacheInFlightRef = useRef<Set<string>>(new Set());
-  const precacheKey = (parentId: TurnId | string, prompt: string) =>
-    `${parentId}::${prompt}`;
-
   // Bridge the store onto tldraw. Whenever the conversation graph changes,
   // syncer reflects it onto the canvas. Structural changes (turn created /
   // removed) trigger relayoutAll so the tidy-tree re-flows.
@@ -192,26 +180,6 @@ export function App() {
     return { turns: out };
   }, []);
 
-  const warmCache = useCallback(
-    (parentAssistantId: TurnId, prompts: string[]) => {
-      if (prompts.length === 0) return;
-      const history = historyFor(parentAssistantId);
-      const emphasized = gatherEmphasized();
-      for (const prompt of prompts) {
-        const key = precacheKey(parentAssistantId, prompt);
-        if (precacheRef.current.has(key) || precacheInFlightRef.current.has(key))
-          continue;
-        precacheInFlightRef.current.add(key);
-        let buffer = '';
-        streamGenerate(prompt, history, (d) => { buffer += d; }, undefined, emphasized, [], buildGraphSnapshot())
-          .then(() => { precacheRef.current.set(key, buffer); })
-          .catch(() => {})
-          .finally(() => { precacheInFlightRef.current.delete(key); });
-      }
-    },
-    [historyFor, gatherEmphasized, buildGraphSnapshot],
-  );
-
   // Mobile keyboard offset.
   useEffect(() => {
     const vv = window.visualViewport;
@@ -313,18 +281,8 @@ export function App() {
           for (const c of selectedChips) userContext.push(c.full);
         }
 
-        const cacheK =
-          branchParentId && userContext.length === 0
-            ? precacheKey(branchParentId, text)
-            : null;
-        const cached = cacheK ? precacheRef.current.get(cacheK) : undefined;
         let buffer = '';
-        if (cached !== undefined) {
-          buffer = cached;
-          useConversation
-            .getState()
-            .setContent(assistantId, buffer, { streaming: false });
-        } else {
+        {
           // Re-run the local extractor whenever a sentence ends so chips
           // appear progressively as the response is read, instead of all at
           // once when the stream finishes. extractSpans on a few-hundred-
@@ -411,9 +369,6 @@ export function App() {
         const spans = extractSpans(stripMarkdown(buffer).plain);
         if (spans.length > 0) {
           useConversation.getState().setChipSpans(assistantId, spans);
-          if (precacheEnabledRef.current) {
-            warmCache(assistantId, spans.map((s) => s.question));
-          }
         }
 
         // Reflections (Haiku) — populates assistant.meta.predictions, which
@@ -425,12 +380,6 @@ export function App() {
         fetchAgentPredictions(fullHistory)
           .then((predictions) => {
             useConversation.getState().setPredictions(assistantId, predictions);
-            if (precacheEnabledRef.current) {
-              warmCache(
-                assistantId,
-                predictions.map((p) => p.label.trim()),
-              );
-            }
           })
           .catch(() => {});
       } catch (err) {
@@ -452,7 +401,6 @@ export function App() {
       historyFor,
       gatherEmphasized,
       getParentId,
-      warmCache,
       gatherSelectedChips,
       buildGraphSnapshot,
     ],
@@ -636,8 +584,6 @@ export function App() {
     logEvent('client.start_new', {
       priorTurns: Object.keys(useConversation.getState().turns).length,
     });
-    precacheRef.current.clear();
-    precacheInFlightRef.current.clear();
     useConversation.getState().reset();
     const id = useConversation
       .getState()
@@ -649,108 +595,6 @@ export function App() {
       SMOOTH_CAMERA,
     );
   }, []);
-
-  const rerunSession = useCallback(async () => {
-    const editor = editorRef.current;
-    if (!editor || busy) return;
-    const turns = useConversation.getState().turns;
-
-    // Build user→assistant pairs from the graph (parent edges, not positions).
-    const pairs: { userId: TurnId; assistantId: TurnId }[] = [];
-    for (const t of Object.values(turns)) {
-      if (t.role !== 'user' || t.content.trim() === '') continue;
-      const child = Object.values(turns).find(
-        (c) => c.parentId === t.id && c.role === 'assistant',
-      );
-      if (child) pairs.push({ userId: t.id, assistantId: child.id });
-    }
-    if (pairs.length === 0) return;
-
-    // Wipe stale precache + meta on the assistants being rerun.
-    precacheRef.current.clear();
-    precacheInFlightRef.current.clear();
-    for (const { assistantId } of pairs) {
-      const a = useConversation.getState().getTurn(assistantId);
-      if (a) {
-        useConversation.setState((s) => ({
-          turns: {
-            ...s.turns,
-            [assistantId]: { ...a, meta: {} },
-          },
-        }));
-      }
-    }
-
-    setBusy(true);
-    try {
-      for (const { userId, assistantId } of pairs) {
-        const userT = useConversation.getState().getTurn(userId);
-        if (!userT) continue;
-        useConversation
-          .getState()
-          .setContent(assistantId, '', { streaming: true });
-        const history = historyFor(userId);
-        const emphasized = gatherEmphasized();
-        let buffer = '';
-        try {
-          await streamGenerate(
-            userT.content,
-            history.slice(0, -1),
-            (delta) => {
-              buffer += delta;
-              useConversation
-                .getState()
-                .setContent(assistantId, buffer, { streaming: true });
-            },
-            undefined,
-            emphasized,
-            [],
-            buildGraphSnapshot(),
-          );
-        } catch (err) {
-          useConversation
-            .getState()
-            .setContent(
-              assistantId,
-              `[error: ${(err as Error).message}]`,
-              { streaming: false },
-            );
-          continue;
-        }
-        useConversation
-          .getState()
-          .setContent(assistantId, buffer, { streaming: false });
-
-        const spans = extractSpans(stripMarkdown(buffer).plain);
-        if (spans.length > 0) {
-          useConversation.getState().setChipSpans(assistantId, spans);
-          if (precacheEnabledRef.current) {
-            warmCache(assistantId, spans.map((s) => s.question));
-          }
-        }
-
-        const fullHistory = [
-          ...history,
-          { role: 'assistant' as const, content: buffer },
-        ];
-        fetchAgentPredictions(fullHistory)
-          .then((predictions) => {
-            useConversation
-              .getState()
-              .setPredictions(assistantId, predictions);
-            if (precacheEnabledRef.current) {
-              warmCache(
-                assistantId,
-                predictions.map((p) => p.label.trim()),
-              );
-            }
-          })
-          .catch(() => {});
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, historyFor, gatherEmphasized, warmCache, buildGraphSnapshot]);
 
   function onInputChange(text: string): void {
     setInput(text);
@@ -908,32 +752,6 @@ export function App() {
 
         <button
           type="button"
-          onClick={rerunSession}
-          disabled={busy}
-          aria-label="Re-stream every assistant turn"
-          data-testid="rerun-session"
-          title="Re-run every turn in the graph using the regenerated history of ancestors."
-          style={{
-            ...toolbarBtn,
-            color: busy ? '#aaa' : '#111',
-            cursor: busy ? 'default' : 'pointer',
-            opacity: busy ? 0.6 : 1,
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path
-              d="M3 12a9 9 0 0 1 15.5-6.3M21 12a9 9 0 0 1-15.5 6.3M21 4v5h-5M3 20v-5h5"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-          rerun
-        </button>
-
-        <button
-          type="button"
           onClick={openMap}
           disabled={mapBusy}
           aria-label="Show conversation map"
@@ -956,32 +774,6 @@ export function App() {
             />
           </svg>
           map
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setPrecacheEnabled((v) => !v)}
-          aria-label="Toggle pre-caching of branch responses"
-          data-testid="toggle-precache"
-          title="When on, every chip and presumption is pre-fetched in the background so clicks render instantly. Costs extra API calls."
-          style={{
-            ...toolbarBtn,
-            background: precacheEnabled ? '#1f6f4a' : '#fff',
-            color: precacheEnabled ? '#fff' : '#1f6f4a',
-            border: '1px solid #1f6f4a',
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path
-              d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill={precacheEnabled ? 'currentColor' : 'none'}
-            />
-          </svg>
-          {precacheEnabled ? 'precache on' : 'precache off'}
         </button>
       </div>
 

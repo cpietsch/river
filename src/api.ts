@@ -114,6 +114,7 @@ export async function streamGenerate(
     pathIds?: string[];
     onSessionId?: (id: string) => void;
     onProposal?: (p: BranchProposal) => void;
+    onActivity?: (text: string) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -125,6 +126,7 @@ export async function streamGenerate(
     pathIds = [],
     onSessionId,
     onProposal,
+    onActivity,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -160,6 +162,11 @@ export async function streamGenerate(
         if (parsed.type === 'delta' && typeof parsed.text === 'string') {
           full += parsed.text;
           onDelta(parsed.text);
+        } else if (
+          parsed.type === 'activity' &&
+          typeof parsed.text === 'string'
+        ) {
+          onActivity?.(parsed.text);
         } else if (
           parsed.type === 'session' &&
           typeof parsed.sessionId === 'string'

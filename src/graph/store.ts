@@ -39,9 +39,15 @@ interface ConversationStore {
   // first. Manual delete only — auto-delete would orphan sessions the user
   // may want to return to.
   archive: ArchivedProject[];
+  // Transient: what the agent is currently doing (tool call description),
+  // bound to the streaming assistant turn. Set on each tool_use event,
+  // cleared on the first text delta after, and on stream end. Not
+  // persisted — pure UI feedback.
+  activity: { turnId: TurnId; text: string } | null;
 
   // Mutations — active canvas
   setProjectSessionId: (id: string | null) => void;
+  setActivity: (entry: { turnId: TurnId; text: string } | null) => void;
   createTurn: (init: NewTurnInit) => TurnId;
   setContent: (
     id: TurnId,
@@ -95,8 +101,10 @@ export const useConversation = create<ConversationStore>()(
   turns: {},
   projectSessionId: null,
   archive: [],
+  activity: null,
 
   setProjectSessionId: (id) => set({ projectSessionId: id }),
+  setActivity: (entry) => set({ activity: entry }),
 
   createTurn: (init) => {
     const id: TurnId = init.id ?? createShapeId();

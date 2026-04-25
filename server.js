@@ -262,6 +262,58 @@ function buildSkinnyKickoff(pathIds, input, emphasized, userContext) {
  * snapshot the client sent with this request. Returns a JSON-stringified
  * result for the user.custom_tool_result event.
  */
+// Plain-language description of a tool call, shown to the user in the
+// streaming card so the wait feels purposeful. Trim long inputs so a
+// pasted URL or shell command doesn't blow out the layout.
+function describeTool(name, input) {
+  const trim = (s, n = 70) => {
+    const t = String(s ?? '').replace(/\s+/g, ' ').trim();
+    return t.length > n ? t.slice(0, n) + '…' : t;
+  };
+  switch (name) {
+    case 'web_search': {
+      const q = trim(input?.query);
+      return q ? `searching the web · "${q}"` : 'searching the web';
+    }
+    case 'web_fetch': {
+      const url = trim(input?.url, 80);
+      return url ? `fetching · ${url}` : 'fetching a page';
+    }
+    case 'bash': {
+      const cmd = trim(input?.command, 80);
+      return cmd ? `running · ${cmd}` : 'running a shell command';
+    }
+    case 'glob': {
+      const p = trim(input?.pattern);
+      return p ? `looking for files · ${p}` : 'listing files';
+    }
+    case 'grep': {
+      const p = trim(input?.pattern);
+      return p ? `searching files · "${p}"` : 'searching files';
+    }
+    case 'read': {
+      const p = trim(input?.path);
+      return p ? `reading · ${p}` : 'reading a file';
+    }
+    case 'write': {
+      const p = trim(input?.path);
+      return p ? `writing · ${p}` : 'writing a file';
+    }
+    case 'edit': {
+      const p = trim(input?.path);
+      return p ? `editing · ${p}` : 'editing a file';
+    }
+    case 'get_graph_summary':
+      return 'looking at the canvas structure';
+    case 'get_card':
+      return `looking at a specific card`;
+    case 'create_branch':
+      return 'proposing a branch';
+    default:
+      return `using ${name}`;
+  }
+}
+
 function resolveGraphTool(name, input, graph) {
   const turns = graph?.turns ?? {};
   if (name === 'get_graph_summary') {
@@ -432,9 +484,15 @@ app.post('/api/generate', async (req, res) => {
           totalChars = chunk.length;
         }
       }
-      // Built-in tool use (web_search, web_fetch, bash, file ops...)
+      // Built-in tool use (web_search, web_fetch, bash, file ops...) — emit
+      // a plain-language activity line so the streaming card can show what
+      // the agent is doing while it waits on the tool.
       if (event.type === 'agent.tool_use') {
         toolUses += 1;
+        const desc = describeTool(event.name, event.input);
+        res.write(
+          `data: ${JSON.stringify({ type: 'activity', text: desc })}\n\n`,
+        );
         logEvent('generate.tool_use', {
           sessionId,
           tool: event.name,
@@ -453,6 +511,14 @@ app.post('/api/generate', async (req, res) => {
       // goes idle (requires_action) until we send the result, then resumes.
       if (event.type === 'agent.custom_tool_use') {
         customToolUses += 1;
+        // Activity line for the streaming card. Shown briefly until the
+        // agent's response text starts streaming back in.
+        res.write(
+          `data: ${JSON.stringify({
+            type: 'activity',
+            text: describeTool(event.name, event.input),
+          })}\n\n`,
+        );
         logEvent('generate.custom_tool_use', {
           sessionId,
           tool: event.name,

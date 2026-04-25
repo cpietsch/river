@@ -10,6 +10,7 @@ import {
 import { useCardActions } from './CardActions';
 import type { ChipSpan } from './api';
 import { parseBlocks, stripMarkdown } from './graph/markdown';
+import { useConversation } from './graph/store';
 
 // Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
 // synthesized click on touchend often never fires on the button — so onClick
@@ -146,6 +147,12 @@ function CardBody({ shape }: { shape: CardShape }) {
   const isActive = actions?.activeId === shape.id;
   const contentRef = useRef<HTMLDivElement | null>(null);
   const resizeCard = actions?.resizeCard;
+  // Live read of the agent's current activity (e.g. "searching the web · …")
+  // when this card is the streaming target. Filters by turnId so other
+  // cards don't re-render on every activity change.
+  const activityText = useConversation((s) =>
+    s.activity && s.activity.turnId === shape.id ? s.activity.text : null,
+  );
 
   // Measure the content block so the card's shape height matches exactly the
   // rendered text — one source of truth, no character-count heuristic.
@@ -226,8 +233,56 @@ function CardBody({ shape }: { shape: CardShape }) {
               (phrase) => actions?.toggleChipSelected(shape.id, phrase),
               streaming,
             )
-          : 'thinking…'}
-        {!content && streaming && <span className="river-cursor">▊</span>}
+          : streaming && activityText
+            ? (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      background: '#2e6ecf',
+                      boxShadow: '0 0 0 4px rgba(46,110,207,0.18)',
+                      flex: '0 0 auto',
+                    }}
+                  />
+                  <span style={{ color: '#6b6660', fontStyle: 'italic' }}>
+                    {activityText}
+                  </span>
+                </span>
+              )
+            : 'thinking…'}
+        {!content && streaming && !activityText && <span className="river-cursor">▊</span>}
+        {/* Mid-stream tool indicator: when the agent has already streamed
+            some text and then kicks off another tool, surface the activity
+            inline below. Cleared by the next text delta. */}
+        {content && streaming && activityText && (
+          <div
+            style={{
+              marginTop: 10,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              color: '#6b6660',
+              fontStyle: 'italic',
+              fontSize: 14,
+            }}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#2e6ecf',
+                boxShadow: '0 0 0 4px rgba(46,110,207,0.18)',
+                flex: '0 0 auto',
+              }}
+            />
+            {activityText}
+          </div>
+        )}
       </div>
 
       {/* Action icons: same two on every card (branch + like), bottom-right so

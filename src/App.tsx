@@ -345,6 +345,14 @@ export function App() {
             history.slice(0, -1),
             (delta) => {
               buffer += delta;
+              // First text chunk after a tool — clear the activity line so
+              // the prose takes over the streaming card cleanly. Subsequent
+              // tools will set it again, this clears it again. Natural
+              // alternation as the agent flips between tools and prose.
+              const cur = useConversation.getState().activity;
+              if (cur && cur.turnId === assistantId) {
+                useConversation.getState().setActivity(null);
+              }
               useConversation
                 .getState()
                 .setContent(assistantId, buffer, { streaming: true });
@@ -372,6 +380,11 @@ export function App() {
                 ) {
                   useConversation.getState().setProjectSessionId(id);
                 }
+              },
+              onActivity: (text) => {
+                useConversation
+                  .getState()
+                  .setActivity({ turnId: assistantId, text });
               },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {
@@ -475,6 +488,12 @@ export function App() {
           );
       } finally {
         setBusy(false);
+        // Stream's done — clear any lingering activity for this turn so
+        // the card doesn't leave a stale "searching the web…" hint.
+        const cur = useConversation.getState().activity;
+        if (cur && cur.turnId === assistantId) {
+          useConversation.getState().setActivity(null);
+        }
       }
     },
     [

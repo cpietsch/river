@@ -9,20 +9,31 @@ import {
 } from 'tldraw';
 import { useCardActions } from './CardActions';
 
-// Mobile fix: with tldraw's hand tool active, the editor's pointer handler
-// races to setPointerCapture on the canvas root the moment a touch lands.
-// Even tiny finger drift before touchend makes the browser cancel the
-// synthesized click on the button. Calling setPointerCapture on the button
-// itself in pointerdown wins that race — the gesture stays anchored to the
-// button and click fires on touchend. stopPropagation prevents tldraw's
-// React-level handlers from running too.
+// Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
+// synthesized click on touchend often never fires on the button — so onClick
+// is unreliable for inline taps. We trigger actions on pointerdown directly
+// (instant feedback, no waiting for capture release) and stopPropagation so
+// tldraw never sees the gesture. For passive guards (textarea) where there
+// IS no action, just stopPropagation.
 function tapPointerDown(e: ReactPointerEvent<HTMLElement>): void {
   e.stopPropagation();
-  try {
-    e.currentTarget.setPointerCapture(e.pointerId);
-  } catch {
-    // Some browsers throw on capture for transient elements — ignore.
-  }
+}
+
+/**
+ * Bind to onPointerDown to invoke `action` immediately on tap (mobile-safe)
+ * while preventing tldraw from receiving the gesture. Skip the action when
+ * `disabled` is true. This replaces the onClick + setPointerCapture pattern
+ * which was racy under tldraw's hand-tool pointer capture.
+ */
+function tap(
+  action: () => void,
+  disabled = false,
+): (e: ReactPointerEvent<HTMLElement>) => void {
+  return (e) => {
+    e.stopPropagation();
+    if (disabled) return;
+    action();
+  };
 }
 
 export type CardShape = TLBaseShape<
@@ -230,11 +241,7 @@ function IconButton({
     <button
       type="button"
       aria-label={label}
-      onPointerDown={tapPointerDown}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
+      onPointerDown={tap(onClick)}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -343,11 +350,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
                 type="button"
                 title={p.full}
                 aria-pressed={on}
-                onPointerDown={tapPointerDown}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleReflection(p);
-                }}
+                onPointerDown={tap(() => toggleReflection(p))}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -422,11 +425,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
         />
         <button
           type="button"
-          onPointerDown={tapPointerDown}
-          onClick={(e) => {
-            e.stopPropagation();
-            submit();
-          }}
+          onPointerDown={tap(() => submit(), !canSend)}
           disabled={!canSend}
           aria-label="Send"
           data-testid="send"
@@ -505,11 +504,7 @@ function BranchChip({ term, onClick }: { term: string; onClick: () => void }) {
   return (
     <button
       type="button"
-      onPointerDown={tapPointerDown}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
+      onPointerDown={tap(onClick)}
       title={`Branch: ${term}`}
       style={{
         display: 'inline',

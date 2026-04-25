@@ -574,33 +574,36 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // Unselected chips blend in (subtle dotted underline) so the prose stays
-  // readable even with many chips; selected chips fill solid blue and
-  // become unmistakable. Hovering an unselected chip nudges it forward
-  // (light tint + solid underline) so the affordance is discoverable.
+  // Marker / highlighter metaphor: selected text is "painted" with a
+  // translucent yellow stroke that lays behind the words (linear-gradient
+  // limits the band to the middle of the line so it reads like marker on
+  // paper, not a full background fill). Unselected stays a subtle dotted
+  // underline; hover previews the stroke at low opacity.
   return (
     <button
       type="button"
       className={on ? 'river-chip on' : 'river-chip'}
       onPointerDown={tap(onClick)}
       aria-pressed={on}
-      title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
+      title={on ? `Marked: ${term} (tap to clear)` : `Mark: ${term}`}
       style={{
         display: 'inline',
-        padding: on ? '1px 8px' : '0 1px',
-        margin: '0 1px',
-        background: on ? '#2e6ecf' : 'transparent',
+        padding: '0 1px',
+        margin: 0,
+        background: on
+          ? 'linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.75) 22%, rgba(252, 211, 64, 0.75) 92%, transparent 92%)'
+          : 'transparent',
         border: 'none',
-        borderRadius: on ? 999 : 0,
-        borderBottom: on ? 'none' : '1px dotted #2e6ecf',
-        color: on ? '#fff' : 'inherit',
+        borderRadius: 0,
+        borderBottom: on ? 'none' : '1px dotted rgba(0,0,0,0.28)',
+        color: 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
-        fontWeight: on ? 600 : 'inherit',
+        fontWeight: 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
-        transition: 'background 120ms, color 120ms, border-color 120ms',
+        transition: 'background 140ms, border-color 140ms',
       }}
     >
       {term}

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import { createShapeId } from 'tldraw';
 import type { Presumption } from '../api';
 import type { Turn, TurnId, TurnMeta, TurnRole } from './types';
@@ -39,7 +40,9 @@ interface ConversationStore {
   getDescendants: (id: TurnId) => Turn[]; // BFS from id, includes self
 }
 
-export const useConversation = create<ConversationStore>((set, get) => ({
+export const useConversation = create<ConversationStore>()(
+  persist(
+    (set, get) => ({
   turns: {},
 
   createTurn: (init) => {
@@ -193,4 +196,12 @@ export const useConversation = create<ConversationStore>((set, get) => ({
     }
     return out;
   },
-}));
+    }),
+    {
+      name: 'river-2-graph',
+      storage: createJSONStorage(() => localStorage),
+      // Only persist the data, not the action functions.
+      partialize: (state) => ({ turns: state.turns }),
+    },
+  ),
+);

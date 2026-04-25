@@ -1,6 +1,6 @@
 # river-2
 
-Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant turn is a card, branches are arrows, and a parallel "reflection layer" surfaces hidden assumptions next to each assistant turn. Two-process app — Vite (web) + Express (API proxy to Anthropic).
+Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant turn is a card, branches are arrows, and assistant cards have inline phrase-chips you can mark to ride forward as context. Multi-agent perspective layer surfaces three takes (assumption / skeptic / expander) above the next user input. Two-process app — Vite (web) + Express (API proxy to Anthropic).
 
 ## Run
 
@@ -11,46 +11,71 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 
 ## Layout
 
-- `src/App.tsx` — owns the editor, the conversation graph, autolayout (`relayoutAll` tidy-tree, `repositionChain` after card-height changes), reflection spawning, and the `CardActionsContext` provider.
-- `src/CardShape.tsx` — custom tldraw `ShapeUtil` for `card`. Renders three roles (`user` / `assistant` / `presumption`) across two layers (`action` / `reflection`). The active empty user card renders as `<ActiveInputCard>` (the chat input itself). Pill chips inside assistant text are produced by `renderWithBranchChips` which scans for `[[term]]`.
-- `src/CardActions.tsx` — React Context interface bridging App state to deeply-nested card UI without prop drilling.
-- `src/api.ts` — fetch wrappers: `streamGenerate` (SSE), `fetchMist`, `fetchReflections`.
-- `src/tldraw-augment.d.ts` — extends tldraw's global shape map with the `card` shape props.
-- `server.js` — Express. Three endpoints: `POST /api/generate` streams the main turn (Sonnet), `POST /api/mist` returns continuation suggestions (Haiku), `POST /api/reflect` returns 3 presumptions (Haiku). Prompts live at the top.
+### Source of truth: the conversation graph
+
+- `src/graph/store.ts` — Zustand store (`useConversation`) with persist middleware (localStorage key `river-2-graph`). Holds `Turn` records keyed by `TurnId` (a `TLShapeId`). Mutators: `createTurn`, `setContent`, `setStreaming`, `setEmphasis`, `setChipSpans`, `setPredictions`, `togglePrediction`, `toggleChipSelected`, `clearChipsSelected`, `removeSubtree`, `reset`. Selectors: `getTurn`, `getChildren`, `getAncestors`, `getDescendants`.
+- `src/graph/types.ts` — `Turn`, `TurnMeta` (chipSpans, predictions, predictionsToggled, chipsSelected), `ConversationGraph`.
+- `src/graph/sync.ts` — `syncStoreToTldraw(editor)`: idempotent diff that ensures tldraw shapes mirror store turns + parent edges. Creates missing card shapes, updates drifted props, deletes orphans.
+- `src/graph/useTldrawSync.ts` — React hook that subscribes the syncer to the store. Surfaces `onStructuralChange` so App can run `relayoutAll` on turn create/remove.
+- `src/graph/extractSpans.ts` — local NLP-based span extractor (compromise + regex backstops). Identifies noun phrases, named entities, hyphenated compounds, acronyms, numeric quantities, and ADJ+NOUN compounds. Replaces an earlier Haiku post-process — runs synchronously in-browser, sub-millisecond per response.
+- `src/graph/markdown.ts` — `stripMarkdown` (strips `**bold**` / `*italic*` markers, returns plain text + ranges) and `parseBlocks` (splits text into paragraph + table blocks).
+
+### App + UI
+
+- `src/App.tsx` — owns the editor ref, transient UI state (active input, busy, ctxMenu, precache toggle), and ALL graph mutations. Read paths use store selectors. Layout (`relayoutAll` tidy-tree, `repositionChain` after height changes) walks the graph store, not arrow bindings. Wires the `CardActionsContext` provider.
+- `src/CardShape.tsx` — custom tldraw `ShapeUtil` for `card`. Renders user/assistant cards with serif body. The active empty user card short-circuits to `<ActiveInputCard>` (the chat input). Markdown emphasis + chip spans are rendered via `renderContentBlocks` → `renderWithChipSpans`. Inline chips toggle in-place (no branching).
+- `src/CardActions.tsx` — React Context interface bridging App to deeply-nested card UI.
+- `src/api.ts` — fetch wrappers: `streamGenerate` (SSE), `fetchAgentPredictions`. Types: `ChipSpan`, `AgentPrediction`, `AgentId`.
+- `src/tldraw-augment.d.ts` — extends tldraw's global shape map.
+- `server.js` — Express. Endpoints: `POST /api/generate` streams the main turn (Sonnet), `POST /api/mist` returns continuation suggestions (Haiku), `POST /api/agents` runs all agents in parallel and returns flat AgentPrediction[] tagged by agent. `MAIN_SYSTEM_BASE` allows light markdown (`**bold**`, `*italic*`, paragraph breaks `\n\n`, comparison tables). Per-agent prompts in `AGENTS` constant.
 
 ## Concepts that are not obvious from the code
 
-**Conversation history walks arrow bindings, not X-position.** `historyFor(leafId)` follows incoming arrow bindings upward. Branches leave the parent's column, so a positional heuristic would lose the parent assistant — the arrow graph is authoritative.
+**The store is canonical, tldraw is a view.** Every mutation goes through `useConversation`; the syncer hook applies diffs to tldraw shapes/arrows. Read paths (`historyFor`, `getParentId`, `gatherEmphasized`, `relayoutAll`) walk the graph. tldraw's persistence (IndexedDB) and the store's persistence (localStorage) reconcile on mount via the syncer.
 
-**Active card IS the chat input.** When a user card has empty content and `activeId === id`, `CardBody` short-circuits to `<ActiveInputCard>`. There is no separate input bar except the `tap "+ new" to start` hint shown when nothing is active.
+**Inline chips are derived from prose, locally.** Sonnet writes plain prose with light markdown — no `[[X]]` markup. After each stream completes, `extractSpans(stripMarkdown(buffer).plain)` returns an array of `{phrase, question}` spans, written to `assistant.meta.chipSpans`. The renderer walks the unified set of (chip + bold + italic) ranges and emits nested `<strong>` / `<em>` / `<BranchChip>`. Per-sentence streaming extraction: when the buffer crosses a `. ! ?` followed by whitespace, re-run the extractor — chips appear progressively.
 
-**Side-flows must not steal the active input.** `runTurnFrom` captures `isFromActive = userCardId === activeId`. Only the main flow clears the input, creates a follow-up empty user card, and shifts `activeId`. Pill clicks (`branchAbout`) and reflection promotion (`promoteReflection`) call `runTurnFrom` from a non-active card — they must leave the user's main input untouched, otherwise the original empty user card loses active status and renders the empty-content fallback (`'thinking…'`) permanently.
+**Marker / highlight UX.** Tapping a chip toggles its selected state in `assistant.meta.chipsSelected[]`. Single-occurrence wrap (only the first match per phrase becomes a chip), but selection is per-card. Visually: unselected chips are *invisible* (identical to surrounding text), selected fills blue with a 2px box-shadow ring (no padding shift, so line wrapping is unaffected). Hover previews the selection at low opacity.
 
-**Visual emphasis is prompt weight.** Cards with `emphasis >= 2` (toggled by the heart icon) have their content collected by `gatherEmphasized` and prepended to the system prompt as `PRIORITY CONSTRAINTS` for the next generate call.
+**Send pipeline merges sources.** When the user submits:
+- typed text → user message; toggled agent pills + selected chips → `userContext` system-prompt augmentation.
+- empty text + selections → selections become the user message; `userContext` is skipped to avoid duplication.
+- After successful submit, `chipsSelected` clears on the source cards (selections don't quietly carry into every subsequent turn).
 
-**Reflection layer.** Each assistant turn gets 3 presumption cards spawned to its right via `spawnPresumptions`, connected by dashed light-violet arrows (`connectReflection`). Arrows are tagged `meta: { kind: 'reflection' }`. The X-ray toggle (`reflectionsVisible`) hides the reflection layer; `syncReflectionArrows` flips arrow opacity. **Locked tldraw arrows silently reject `updateShape({opacity})`** — the helper does unlock → update → relock. The toggle effect runs once on mount before the editor exists, so `handleMount` also calls `syncReflectionArrows` directly after `editorRef.current = editor`.
+**Three agents, one pipeline.** `assumption` (lavender), `skeptic` (amber), `expander` (teal) each return ~2 predictions per turn; rendered as a single pill row above the next input. Toggling any of them adds to `predictionsToggled` on the parent assistant. Same toggle/send mechanics as in-text chips.
 
-**Hand tool, not select tool.** The editor is locked to the `hand` tool with a store listener that snaps it back if anything changes it. Drag = pan camera, never moves shapes. This makes cards effectively immovable without needing `isLocked` on every card (which would force unlock/relock around every autolayout `updateShape`).
+**Counter pill summarizes in-text selections.** When `chipSelectionCount > 0` (sum across active chain ancestors), a blue **N selected ×** pill appears in the input row. Tapping clears every chip selection across the chain.
 
-**`canCull = () => false` on cards.** Without this, cards offscreen unmount their HTML container, `useLayoutEffect` reads `scrollHeight === 0`, and the height collapses to a sliver. The measurement code zero-guards anyway as defense in depth.
+**Layout is graph-driven, not arrow-driven.** `relayoutAll` reads `parent → children` from the store, computes a tidy-tree column layout, and writes `(x, y)` back to tldraw shapes. `repositionChain` walks store children when a card's measured height changes.
 
-**Camera animation.** `editor.user.updateUserPreferences({ animationSpeed: 1 })` overrides OS reduce-motion so programmatic camera moves stay smooth. Reduced-motion users would otherwise see canvas jumps.
+**Hand tool, not select tool.** The editor is locked to the `hand` tool with a store listener that snaps it back. Drag = pan, never moves shapes. Cards are immovable without per-card `isLocked` (which would force unlock/relock around every autolayout `updateShape`).
 
-**Persistence.** `persistenceKey="river-2-reflection"`. Bump this when the card schema changes — adding `layer`, `emphasis`, or new role values requires it.
+**Mobile taps on inline elements use `pointerDown` (not `click`).** tldraw's hand tool captures the pointer at touchstart, and the synthesized click on touchend often never fires. The `tap()` helper in `CardShape.tsx` triggers actions on `pointerdown` directly with `stopPropagation`. Applied to chips, agent pills, icon buttons, and the send button.
 
-**Orphan-arrow sweep on mount.** Crash-recovered sessions can carry arrows whose bindings reach deleted shapes. `handleMount` walks all arrows and deletes ones with missing bind targets.
+**`canCull = () => false` on cards.** Offscreen cards would unmount their HTML container; `useLayoutEffect` would read `scrollHeight === 0` and the height would collapse to a sliver.
+
+**Camera animation override.** `editor.user.updateUserPreferences({ animationSpeed: 1 })` overrides OS reduce-motion so programmatic camera moves stay smooth.
+
+**Persistence keys.** zustand: `river-2-graph` (localStorage, conversation graph). tldraw: `persistenceKey="river-2-graph"` (IndexedDB, shape positions). Bump both when the schema changes meaningfully.
+
+## Design principles (saved as memories)
+
+- **Reduce visual complexity** — invisible default states, discoverability via hover, no upfront decoration on dense interactive surfaces.
+- **Familiar surface, deep structure** ("wolf im Schafspelz") — new mechanics ride on top of a UI the user already knows; complexity reveals on invocation, never upfront.
 
 ## Conventions
 
-- Custom context menu — `components.ContextMenu = null` disables tldraw's, then we render `<RiverCtxMenu>` from a `contextmenu` handler on the outer `<div>`.
 - All tldraw arrows are created with `isLocked: true` so users can't drag endpoints.
-- `relayoutAll` filters out reflection-layer cards entirely; reflection layout is owned by `spawnPresumptions`.
-- `repositionChain` skips reflection children for the same reason.
-- Branch chips, icon buttons, and the active-input textarea/send button all `e.stopPropagation()` on `pointerDown` and `click` so tldraw never sees them.
-- `touch-action: none` on `html, body, #root` (in `index.html`) — without it, React's passive synthetic touch listeners log warnings on every mobile tap from tldraw's internal `preventDefault`.
+- The custom context menu disables tldraw's via `components.ContextMenu = null`. `<RiverCtxMenu>` opens from a `contextmenu` handler on the outer `<div>`. Cards offer New conversation / Branch / Copy text / Delete.
+- Inline elements inside cards (chips, agent pills, icon buttons, textarea, send button) all use `tap()` / `tapPointerDown()` from `CardShape.tsx` — `stopPropagation` on `pointerdown`, action fires immediately.
+- `touch-action: none` on `html, body, #root` (in `index.html`) silences tldraw's preventDefault warnings; `.tl-html-container button/textarea/[role=button]` reverts to `manipulation` so taps still work.
+- Body fonts: Source Serif 4 (loaded from Google Fonts in `index.html`) for assistant/user card content. UI chrome (toolbar, pills, input) keeps `system-ui` sans.
 
 ## Prototype-only knobs
 
 - `START_SEED = 'LUCKFOX PicoKVM Base vs NanoKVM'` — pre-fills the input on a fresh session for fast iteration.
 - `(window as any).__editor__` — dev handle exposed in `handleMount`. Remove before shipping.
+- `precache` toggle in the toolbar — when on, every turn fires background main-model calls for each chip / presumption so subsequent clicks render instantly. Off by default (costs ~6 extra Sonnet calls per turn).
+- `rerun` toolbar button — re-streams every assistant in the graph using the regenerated history; useful for testing prompt changes.
+- `npx tsx src/graph/extractSpans.test.ts` — runs the local extractor on five sample topics (tech, cooking, history, philosophy, biology) and prints the spans. Useful when tuning coverage.
 - `scratch/` — mobile screenshots from prior iterations; not used at runtime.

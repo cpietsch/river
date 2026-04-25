@@ -5,11 +5,22 @@ import Anthropic from '@anthropic-ai/sdk';
 const PORT = Number(process.env.PORT ?? 4000);
 const MAIN_MODEL = process.env.MAIN_MODEL ?? 'claude-sonnet-4-6';
 const MIST_MODEL = process.env.MIST_MODEL ?? 'claude-haiku-4-5-20251001';
+// Managed Agent IDs created by scripts/setup-agent.js. The brain (the main
+// /api/generate response) runs as a Managed Agent session referencing these;
+// the Haiku-based pill agents (assumption/skeptic/expander) stay on plain
+// Messages API since they're stateless one-shot calls.
+const AGENT_ID = process.env.AGENT_ID;
+const ENV_ID = process.env.ENV_ID;
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
   console.error('ANTHROPIC_API_KEY missing in .env');
   process.exit(1);
+}
+if (!AGENT_ID || !ENV_ID) {
+  console.warn(
+    '! AGENT_ID/ENV_ID missing — /api/generate will fail. Run `npm run setup-agent` to create them.',
+  );
 }
 
 const anthropic = new Anthropic({ apiKey });
@@ -95,61 +106,141 @@ const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user migh
 
 const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
+/**
+ * Build the kickoff user-message body that the Managed Agent session sees.
+ * The conversation is a tree client-side, so we don't keep a long-lived
+ * session per branch — instead, each turn opens a fresh session and embeds
+ * the priors as text in one user.message: priority constraints, carried
+ * assumptions, prior turns, then the current question.
+ */
+function buildKickoffMessage(history, input, emphasized, userContext) {
+  const parts = [];
+  const constraints = (Array.isArray(emphasized) ? emphasized : [])
+    .filter((c) => typeof c === 'string' && c.trim())
+    .map((c) => `- ${c.trim()}`)
+    .join('\n');
+  if (constraints) {
+    parts.push(
+      `PRIORITY CONSTRAINTS (the user emphasized these on the canvas — weight them heavily):\n${constraints}`,
+    );
+  }
+  const ctx = (Array.isArray(userContext) ? userContext : [])
+    .filter((c) => typeof c === 'string' && c.trim())
+    .map((c) => `- ${c.trim()}`)
+    .join('\n');
+  if (ctx) {
+    parts.push(
+      `IMPLICIT ASSUMPTIONS the user is carrying (tapped pills — engage with these explicitly: examine, challenge, or accommodate, don't just restate):\n${ctx}`,
+    );
+  }
+  const priors = (Array.isArray(history) ? history : [])
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim());
+  if (priors.length) {
+    const rendered = priors
+      .map((m) => `${m.role === 'user' ? 'USER' : 'ASSISTANT'}: ${m.content.trim()}`)
+      .join('\n\n');
+    parts.push(`CONVERSATION SO FAR:\n${rendered}`);
+  }
+  parts.push(`CURRENT MESSAGE:\nUSER: ${input.trim()}`);
+  return parts.join('\n\n---\n\n');
+}
+
 app.post('/api/generate', async (req, res) => {
   const { history = [], input = '', emphasized = [], userContext = [] } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
     return;
   }
-  const messages = [
-    ...history.filter((m) => m.role === 'user' || m.role === 'assistant'),
-    { role: 'user', content: input },
-  ];
-  // System-prompt augmentations:
-  //  - emphasized: visual emphasis (heart icon on a card) becomes a hard
-  //    PRIORITY CONSTRAINT that the response should respect.
-  //  - userContext: presumption pills the user has toggled on next to the
-  //    input. Framing differs — these are first-person assumptions the user
-  //    is *carrying*, not directives to follow. The model should engage with
-  //    them (examine, accommodate, push back) rather than blindly obey.
-  let systemPrompt = MAIN_SYSTEM_BASE;
-  const userCtx = (Array.isArray(userContext) ? userContext : [])
-    .filter((c) => typeof c === 'string' && c.trim())
-    .map((c) => `- ${c.trim()}`)
-    .join('\n');
-  if (userCtx) {
-    systemPrompt = `THE USER IS CARRYING THESE IMPLICIT ASSUMPTIONS (they tapped pills to surface them — engage with these explicitly: examine, challenge, or accommodate them, don't just restate them):\n${userCtx}\n\n${systemPrompt}`;
+  if (!AGENT_ID || !ENV_ID) {
+    res.status(500).json({ error: 'agent not configured — run `npm run setup-agent`' });
+    return;
   }
-  if (Array.isArray(emphasized) && emphasized.length > 0) {
-    const constraints = emphasized
-      .filter((c) => typeof c === 'string' && c.trim())
-      .map((c) => `- ${c.trim()}`)
-      .join('\n');
-    if (constraints) {
-      systemPrompt = `PRIORITY CONSTRAINTS (the user has visually emphasized these on the canvas — weight them heavily in your response):\n${constraints}\n\n${systemPrompt}`;
-    }
-  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
+
+  const text = buildKickoffMessage(history, input, emphasized, userContext);
+
+  let session;
   try {
-    const stream = anthropic.messages.stream({
-      model: MAIN_MODEL,
-      max_tokens: 600,
-      system: systemPrompt,
-      messages,
+    session = await anthropic.beta.sessions.create({
+      agent: AGENT_ID,
+      environment_id: ENV_ID,
+      title: input.trim().slice(0, 60),
     });
+
+    // Stream-first: open the SSE stream BEFORE sending the kickoff so we
+    // don't miss early events. (See `shared/managed-agents-events.md` →
+    // Stream-first ordering — the stream only delivers events emitted
+    // after it opens.)
+    const streamPromise = anthropic.beta.sessions.events.stream(session.id);
+    await anthropic.beta.sessions.events.send(session.id, {
+      events: [
+        {
+          type: 'user.message',
+          content: [{ type: 'text', text }],
+        },
+      ],
+    });
+    const stream = await streamPromise;
+
+    // Track which agent.message blocks we've already emitted so re-emitted
+    // event versions (e.g. queued → processed) don't duplicate text.
+    let lastEmitted = '';
     for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        res.write(`data: ${JSON.stringify({ type: 'delta', text: event.delta.text })}\n\n`);
+      // Forward agent text. agent.message events carry full content arrays;
+      // we emit the concatenated text as one delta per event.
+      if (event.type === 'agent.message' && Array.isArray(event.content)) {
+        const chunk = event.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+        if (chunk && chunk !== lastEmitted) {
+          res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`);
+          lastEmitted = chunk;
+        }
+      }
+      // Terminal break: idle with a non-action stop_reason, or terminated.
+      // requires_action means the agent is awaiting client input
+      // (tool_confirmation or custom_tool_result) — we don't expose those
+      // tools, so it shouldn't happen, but skip just in case.
+      if (event.type === 'session.status_terminated') break;
+      if (
+        event.type === 'session.status_idle' &&
+        event.stop_reason?.type !== 'requires_action'
+      ) {
+        break;
+      }
+      if (event.type === 'session.error') {
+        res.write(
+          `data: ${JSON.stringify({
+            type: 'error',
+            message: event.error?.message ?? 'session error',
+          })}\n\n`,
+        );
+        break;
       }
     }
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
   } catch (err) {
-    res.write(`data: ${JSON.stringify({ type: 'error', message: String(err?.message ?? err) })}\n\n`);
+    res.write(
+      `data: ${JSON.stringify({ type: 'error', message: String(err?.message ?? err) })}\n\n`,
+    );
   } finally {
     res.end();
+    // Best-effort cleanup. The post-idle status-write race (see
+    // `shared/managed-agents-client-patterns.md` Pattern 6) means delete
+    // can occasionally 400 if the session is still running — swallow that;
+    // sessions auto-archive eventually.
+    if (session) {
+      try {
+        await anthropic.beta.sessions.delete(session.id);
+      } catch (_) {
+        // ignore
+      }
+    }
   }
 });
 

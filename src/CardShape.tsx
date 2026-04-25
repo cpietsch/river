@@ -502,15 +502,14 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Render prose with EVERY occurrence of each `chipSpans` phrase wrapped as
- * a tappable chip. Marker-metaphor consistent: highlighting "MacBook Pro"
- * marks every mention, not just the first. Toggle state is keyed by phrase
- * so tapping any instance toggles all of them in unison.
+ * Render prose with each `chipSpans` phrase wrapped at its FIRST verbatim
+ * occurrence only (single-occurrence). Tapping a chip toggles just that
+ * instance — later mentions of the same phrase stay plain text.
  *
  * Algorithm:
  *  1. For each span (longest first so "MacBook Pro M-series" claims its
- *     range before "Pro" or "MacBook" can), find ALL non-overlapping
- *     case-insensitive occurrences.
+ *     range before "Pro" or "MacBook" can), find the first non-overlapping
+ *     case-insensitive occurrence.
  *  2. Sort the resulting matches by start position.
  *  3. Walk text + matches alternately to render parts.
  */
@@ -539,7 +538,7 @@ function renderWithChipSpans(
         continue;
       }
       matches.push({ start: idx, end, phrase: span.phrase });
-      from = end;
+      break; // only the first non-overlapping occurrence
     }
   }
   matches.sort((a, b) => a.start - b.start);
@@ -573,34 +572,31 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // Marker / highlighter metaphor. Unselected chips are INVISIBLE (look
-  // identical to surrounding text) so the prose stays clean. Selected
-  // chips paint a translucent yellow stroke at every occurrence — tap one
-  // instance and every mention of the phrase lights up across the card.
+  // Unselected chips are INVISIBLE (identical to surrounding text). Tapping
+  // one selects just that instance — blue pill style. Hover previews the
+  // selected styling at lower opacity for discoverability.
   return (
     <button
       type="button"
       className={on ? 'river-chip on' : 'river-chip'}
       onPointerDown={tap(onClick)}
       aria-pressed={on}
-      title={on ? `Marked: ${term} (tap to clear)` : `Mark: ${term}`}
+      title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
       style={{
         display: 'inline',
-        padding: 0,
+        padding: on ? '1px 8px' : 0,
         margin: 0,
-        background: on
-          ? 'linear-gradient(180deg, transparent 22%, rgba(252, 211, 64, 0.75) 22%, rgba(252, 211, 64, 0.75) 92%, transparent 92%)'
-          : 'transparent',
+        background: on ? '#2e6ecf' : 'transparent',
         border: 'none',
-        borderRadius: 0,
-        color: 'inherit',
+        borderRadius: on ? 999 : 0,
+        color: on ? '#fff' : 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
-        fontWeight: 'inherit',
+        fontWeight: on ? 600 : 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
-        transition: 'background 140ms',
+        transition: 'background 120ms, color 120ms',
       }}
     >
       {term}

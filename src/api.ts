@@ -83,10 +83,22 @@ export type GraphSnapshotTurn = {
 };
 export type GraphSnapshot = { turns: Record<string, GraphSnapshotTurn> };
 
+// Branch proposal forwarded from the server when the agent calls the
+// `create_branch` custom tool. Ephemeral on the client — the UI renders it
+// as a draft suggestion the user can accept (creates the branch + runs it)
+// or dismiss.
+export type BranchProposal = {
+  proposalId: string;
+  parentId: string;
+  prompt: string;
+  rationale: string;
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
  * before any deltas, so the caller can persist it for the next turn.
+ * `onProposal` fires whenever the agent calls `create_branch`.
  * Returns the full concatenated text once the stream finishes.
  */
 export async function streamGenerate(
@@ -100,6 +112,7 @@ export async function streamGenerate(
     graph?: GraphSnapshot | null;
     sessionId?: string | null;
     onSessionId?: (id: string) => void;
+    onProposal?: (p: BranchProposal) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -109,6 +122,7 @@ export async function streamGenerate(
     graph = null,
     sessionId = null,
     onSessionId,
+    onProposal,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -148,6 +162,18 @@ export async function streamGenerate(
           typeof parsed.sessionId === 'string'
         ) {
           onSessionId?.(parsed.sessionId);
+        } else if (
+          parsed.type === 'branch_proposal' &&
+          typeof parsed.proposalId === 'string' &&
+          typeof parsed.parentId === 'string' &&
+          typeof parsed.prompt === 'string'
+        ) {
+          onProposal?.({
+            proposalId: parsed.proposalId,
+            parentId: parsed.parentId,
+            prompt: parsed.prompt,
+            rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
+          });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));
         }

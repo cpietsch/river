@@ -395,7 +395,41 @@ app.post('/api/generate', async (req, res) => {
           tool: event.name,
           input: event.input ?? null,
         });
-        const result = resolveGraphTool(event.name, event.input, graph);
+        let result;
+        if (event.name === 'create_branch') {
+          // create_branch: forward the proposal to the client as an SSE event
+          // the UI renders as a draft suggestion. Acknowledge to the agent
+          // immediately so it can continue — the agent doesn't need to wait
+          // on the user; accept/dismiss happens out-of-band.
+          const parentId = event.input?.parent_id;
+          const prompt = (event.input?.prompt ?? '').toString().trim();
+          const rationale = (event.input?.rationale ?? '').toString().trim();
+          const turns = graph?.turns ?? {};
+          if (!parentId || !turns[parentId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `parent_id ${parentId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (!prompt) {
+            result = JSON.stringify({ ok: false, error: 'prompt is required' });
+          } else {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'branch_proposal',
+                proposalId: event.id,
+                parentId,
+                prompt: prompt.slice(0, 240),
+                rationale: rationale.slice(0, 240),
+              })}\n\n`,
+            );
+            result = JSON.stringify({
+              ok: true,
+              status: 'shown to user as a draft branch suggestion',
+            });
+          }
+        } else {
+          result = resolveGraphTool(event.name, event.input, graph);
+        }
         try {
           await anthropic.beta.sessions.events.send(sessionId, {
             events: [

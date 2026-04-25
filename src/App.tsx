@@ -22,6 +22,7 @@ import {
   streamGenerate,
   type ChatMessage,
   type AgentPrediction,
+  type BranchProposal,
   type GraphSnapshot,
 } from './api';
 import { useConversation, deriveProjectName } from './graph/store';
@@ -61,6 +62,7 @@ export function App() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [proposals, setProposals] = useState<BranchProposal[]>([]);
   const labelInFlightRef = useRef(false);
   const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
   const archivedProjects = useConversation((s) => s.archive);
@@ -358,6 +360,21 @@ export function App() {
                   useConversation.getState().setProjectSessionId(id);
                 }
               },
+              onProposal: (p) => {
+                logEvent('client.branch_proposal_received', {
+                  proposalId: p.proposalId,
+                  parentId: p.parentId,
+                });
+                setProposals((cur) => {
+                  // Drop any existing entry with the same proposalId so a
+                  // re-emitted event doesn't duplicate (defensive).
+                  const filtered = cur.filter(
+                    (x) => x.proposalId !== p.proposalId,
+                  );
+                  // Cap the panel at 5 to avoid runaway noise.
+                  return [p, ...filtered].slice(0, 5);
+                });
+              },
             },
           );
           useConversation
@@ -541,6 +558,37 @@ export function App() {
     [createBranchUserTurn],
   );
 
+  const acceptProposal = useCallback(
+    (p: BranchProposal) => {
+      const turn = useConversation.getState().getTurn(p.parentId as TurnId);
+      if (!turn) {
+        // Parent gone (rare — user deleted the card mid-stream). Drop it.
+        setProposals((cur) =>
+          cur.filter((x) => x.proposalId !== p.proposalId),
+        );
+        return;
+      }
+      const newId = createBranchUserTurn(p.parentId as TurnId);
+      if (!newId) return;
+      logEvent('client.proposal_accept', {
+        proposalId: p.proposalId,
+        parentId: p.parentId,
+      });
+      setProposals((cur) =>
+        cur.filter((x) => x.proposalId !== p.proposalId),
+      );
+      // Run the turn directly with the agent's proposed prompt — bypasses
+      // the active-input flow so we don't have to fight setInput timing.
+      void runTurnFrom(newId, p.prompt, { skipUserContext: true });
+    },
+    [createBranchUserTurn, runTurnFrom],
+  );
+
+  const dismissProposal = useCallback((proposalId: string) => {
+    logEvent('client.proposal_dismiss', { proposalId });
+    setProposals((cur) => cur.filter((x) => x.proposalId !== proposalId));
+  }, []);
+
   const togglePrediction = useCallback(
     (p: AgentPrediction) => {
       if (!activeId) return;
@@ -639,6 +687,7 @@ export function App() {
     // Archive the current canvas — preserves its session so the user can
     // jump back into it from the projects menu. Deletion is manual.
     useConversation.getState().archiveAndReset();
+    setProposals([]);
     const id = useConversation
       .getState()
       .createTurn({ role: 'user', parentId: null });
@@ -657,6 +706,7 @@ export function App() {
       if (!editor) return;
       const ok = useConversation.getState().resumeArchived(archiveId);
       if (!ok) return;
+      setProposals([]);
       logEvent('client.resume_project', { archiveId });
       // Re-seat active on the most recent empty user turn in the resumed
       // canvas (mirrors handleMount logic), or the latest turn otherwise.
@@ -947,6 +997,15 @@ export function App() {
         </div>
       </div>
 
+      {/* Top-right floating panel: agent's branch proposals */}
+      {proposals.length > 0 && (
+        <ProposalsPanel
+          proposals={proposals}
+          onAccept={acceptProposal}
+          onDismiss={dismissProposal}
+        />
+      )}
+
       {/* Bottom hint area is only shown when there's no active card */}
       {activeId == null && (
         <div
@@ -1059,6 +1118,173 @@ const toolbarBtn: React.CSSProperties = {
   WebkitTapHighlightColor: 'transparent',
   minHeight: 40,
 };
+
+/* ─── Branch proposals panel ─── */
+
+/**
+ * Floating panel in the top-right that lists pending branch proposals from
+ * the agent. Each row shows the parent card's title + the suggested prompt
+ * with ✓ to accept (creates the branch + runs it) and ✕ to dismiss. The
+ * agent stays unblocked: proposals are fire-and-forget from its side; the
+ * user takes whichever look promising and ignores the rest.
+ */
+function ProposalsPanel({
+  proposals,
+  onAccept,
+  onDismiss,
+}: {
+  proposals: BranchProposal[];
+  onAccept: (p: BranchProposal) => void;
+  onDismiss: (proposalId: string) => void;
+}) {
+  const turns = useConversation((s) => s.turns);
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        top: 'calc(12px + env(safe-area-inset-top))',
+        right: 'calc(12px + env(safe-area-inset-right))',
+        zIndex: 1001,
+        width: 320,
+        maxWidth: 'calc(100vw - 24px)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        pointerEvents: 'none',
+      }}
+    >
+      <div
+        style={{
+          pointerEvents: 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 10px',
+          background: 'rgba(255,255,255,0.92)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          border: '1px solid rgba(26,26,26,0.12)',
+          borderRadius: 999,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontSize: 11,
+          letterSpacing: 0.4,
+          textTransform: 'uppercase',
+          color: '#6b6660',
+          alignSelf: 'flex-start',
+        }}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path
+            d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+          />
+        </svg>
+        agent suggests · {proposals.length}
+      </div>
+      {proposals.map((p) => {
+        const parent = turns[p.parentId as TurnId];
+        const parentTitle =
+          parent?.meta.label ??
+          (parent
+            ? parent.content.replace(/\s+/g, ' ').trim().slice(0, 60)
+            : 'unknown card');
+        return (
+          <div
+            key={p.proposalId}
+            style={{
+              pointerEvents: 'auto',
+              padding: '10px 12px',
+              background: '#fff',
+              border: '1px solid rgba(26,26,26,0.14)',
+              borderRadius: 12,
+              boxShadow: '0 4px 14px rgba(0,0,0,0.08)',
+              fontFamily: 'system-ui, -apple-system, sans-serif',
+              fontSize: 13,
+              color: '#1a1a1a',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: '#9a9590',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={`branch from ${parentTitle}`}
+            >
+              from <em style={{ color: '#6b6660' }}>{parentTitle}</em>
+            </div>
+            <div style={{ lineHeight: 1.4 }}>{p.prompt}</div>
+            {p.rationale && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: '#6b6660',
+                  fontStyle: 'italic',
+                  lineHeight: 1.35,
+                }}
+              >
+                {p.rationale}
+              </div>
+            )}
+            <div
+              style={{
+                display: 'flex',
+                gap: 6,
+                marginTop: 2,
+                justifyContent: 'flex-end',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => onDismiss(p.proposalId)}
+                aria-label="Dismiss suggestion"
+                style={{
+                  padding: '6px 12px',
+                  background: '#fff',
+                  color: '#6b6660',
+                  border: '1px solid rgba(26,26,26,0.14)',
+                  borderRadius: 999,
+                  font: 'inherit',
+                  fontSize: 12,
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                dismiss
+              </button>
+              <button
+                type="button"
+                onClick={() => onAccept(p)}
+                aria-label="Accept suggestion"
+                style={{
+                  padding: '6px 12px',
+                  background: '#2e6ecf',
+                  color: '#fff',
+                  border: '1px solid #2e6ecf',
+                  borderRadius: 999,
+                  font: 'inherit',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                }}
+              >
+                branch ↗
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 /* ─── Projects menu ─── */
 

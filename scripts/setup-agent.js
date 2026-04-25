@@ -40,6 +40,8 @@ GRAPH INTROSPECTION: the conversation is a tree the user branches from — you o
 - get_card(card_id) returns the full content of one turn.
 Use these when the user asks about exploration ("what have I tried?", "summarize my branches", "compare these directions"). Don't call them on every turn — only when the question is genuinely about the conversation's shape.
 
+BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Call create_branch(parent_id, prompt) when you see a genuinely unexplored angle — a question their reasoning leaves open, a comparison they haven't made, a counterpoint worth examining. The user sees it as a draft they can accept or dismiss; accepting starts a new branch with that prompt as the user's question. Use sparingly: 0 proposals on most turns, at most 1-2 on turns that genuinely open new doors. Skip it for trivial follow-ups (those belong in your prose). Skip it when the user is mid-thread and just wants the answer. Pick parent_id from the graph — usually the current leaf, sometimes an earlier card if the angle relates more to that.
+
 PERSISTENT MEMORY: a /mnt/memory/${MEMORY_STORE_NAME}/ directory is mounted into your container — files there persist across sessions and across "+ new" conversations. Use the read / write / edit / glob / grep tools to interact with it. At the start of a session, glob the memory dir to see what you remember. Write notes when you learn something durably useful: user preferences, recurring topics, project context, conclusions worth keeping. Don't store secrets, tokens, or one-off chatter. Path each memory deliberately (e.g. /mnt/memory/${MEMORY_STORE_NAME}/preferences/tone.md, /mnt/memory/${MEMORY_STORE_NAME}/topics/kvm-research.md) so future-you can find it.
 
 The user is reading on a card; the conversation is a graph they can branch from. Write so any response stands on its own — they may read it out of order.`;
@@ -123,6 +125,33 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['card_id'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'create_branch',
+    description:
+      'Propose a new branch the user might explore from a specific card. The user sees this as a small draft suggestion they can accept (starts a new branch with that prompt as the user\'s question) or dismiss. Use sparingly — 0 proposals on most turns, at most 1-2 on turns that genuinely open new doors. Skip for trivial follow-ups; skip when the user is mid-thread and just wants the answer. Pick parent_id from the conversation graph; usually the current leaf, sometimes an earlier card if the angle relates more to that.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parent_id: {
+          type: 'string',
+          description:
+            'The card id (TurnId) the new branch should sprout from.',
+        },
+        prompt: {
+          type: 'string',
+          description:
+            'The branch prompt — phrased as the user\'s next question or move (first person, like a sticky-note label or one short question, ≤120 chars).',
+        },
+        rationale: {
+          type: 'string',
+          description:
+            'Optional one-line reason for the suggestion, shown to the user as hover. Keep brief.',
+        },
+      },
+      required: ['parent_id', 'prompt'],
     },
   },
 ];

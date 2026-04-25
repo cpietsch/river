@@ -387,6 +387,15 @@ export function App() {
                   .getState()
                   .setActivity({ turnId: assistantId, text });
               },
+              onCardFlag: (f) => {
+                logEvent('client.card_flagged', {
+                  cardId: f.cardId,
+                  reason: f.reason,
+                });
+                useConversation
+                  .getState()
+                  .setAgentFlag(f.cardId as TurnId, f.reason);
+              },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {
                   proposalId: p.proposalId,

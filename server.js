@@ -317,6 +317,8 @@ function describeTool(name, input) {
       return `looking at a specific card`;
     case 'create_branch':
       return 'proposing a branch';
+    case 'flag_card':
+      return 'flagging an important card';
     default:
       return `using ${name}`;
   }
@@ -533,7 +535,34 @@ app.post('/api/generate', async (req, res) => {
           input: event.input ?? null,
         });
         let result;
-        if (event.name === 'create_branch') {
+        if (event.name === 'flag_card') {
+          // flag_card: forward to the client as an SSE event the UI applies
+          // to the store (sets emphasis=2 + records the reason). ACK the
+          // agent immediately so it can keep going.
+          const cardId = event.input?.card_id;
+          const reason = (event.input?.reason ?? '').toString().trim();
+          const turns = graph?.turns ?? {};
+          if (!cardId || !turns[cardId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `card_id ${cardId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (!reason) {
+            result = JSON.stringify({ ok: false, error: 'reason is required' });
+          } else {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'card_flagged',
+                cardId,
+                reason: reason.slice(0, 240),
+              })}\n\n`,
+            );
+            result = JSON.stringify({
+              ok: true,
+              status: 'card flagged for the user',
+            });
+          }
+        } else if (event.name === 'create_branch') {
           // create_branch: forward the proposal to the client as an SSE event
           // the UI renders as a draft suggestion. Acknowledge to the agent
           // immediately so it can continue — the agent doesn't need to wait

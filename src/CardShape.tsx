@@ -285,6 +285,48 @@ function CardBody({ shape }: { shape: CardShape }) {
         )}
       </div>
 
+      {/* Agent flag indicator — appears top-right when the brain has
+          marked this card as a turning point via flag_card. The reason
+          shows on hover via the title attribute. */}
+      {(shape.meta as { agentFlagReason?: string } | undefined)
+        ?.agentFlagReason && (
+        <div
+          title={`agent: ${(shape.meta as { agentFlagReason?: string }).agentFlagReason}`}
+          aria-label="Flagged by the agent"
+          style={{
+            position: 'absolute',
+            top: 8,
+            right: 10,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '2px 8px',
+            background: '#e24a4a',
+            color: '#fff',
+            borderRadius: 999,
+            fontSize: 10,
+            fontFamily: 'system-ui, -apple-system, sans-serif',
+            fontWeight: 500,
+            letterSpacing: 0.4,
+            textTransform: 'uppercase',
+            cursor: 'help',
+            WebkitTapHighlightColor: 'transparent',
+          }}
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path
+              d="M5 3v18M5 4h12l-2 4 2 4H5"
+              stroke="currentColor"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="currentColor"
+            />
+          </svg>
+          flagged
+        </div>
+      )}
+
       {/* Action icons: same two on every card (branch + like), bottom-right so
           they never overlap text. Faded when idle, prominent on hover. */}
       <div

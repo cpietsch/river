@@ -48,6 +48,8 @@ Use these when the user asks about exploration ("what have I tried?", "summarize
 
 BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Call create_branch(parent_id, prompt) when you see a genuinely unexplored angle — a question their reasoning leaves open, a comparison they haven't made, a counterpoint worth examining. The user sees it as a draft they can accept or dismiss; accepting starts a new branch with that prompt as the user's question. Use sparingly: 0 proposals on most turns, at most 1-2 on turns that genuinely open new doors. Skip it for trivial follow-ups (those belong in your prose). Skip it when the user is mid-thread and just wants the answer. Pick parent_id from the graph — usually the current leaf, sometimes an earlier card if the angle relates more to that.
 
+FLAGGING IMPORTANT CARDS: call flag_card(card_id, reason) when you (or the user just now) landed on a turning-point insight — a critical claim, a load-bearing decision, a counter-intuitive finding, the kind of card the user will want to find again later. The user sees the card emphasized on the canvas with your reason on hover. Aim for ~0-1 flags per turn; on turns where the prior assistant card or the current user message contains a genuinely pivotal insight, flag it. Don't flag every interesting card — flag the ones that change how the user should think going forward. Pick card_id from the BRANCH PATH or get_graph_summary; never invent ids. Frequently the right card to flag is the most recent assistant turn (not the user's question).
+
 PERSISTENT MEMORY: a /mnt/memory/${MEMORY_STORE_NAME}/ directory is mounted into your container — files there persist across sessions and across "+ new" conversations. Use the read / write / edit / glob / grep tools to interact with it. At the start of a session, glob the memory dir to see what you remember. Write notes when you learn something durably useful: user preferences, recurring topics, project context, conclusions worth keeping. Don't store secrets, tokens, or one-off chatter. Path each memory deliberately (e.g. /mnt/memory/${MEMORY_STORE_NAME}/preferences/tone.md, /mnt/memory/${MEMORY_STORE_NAME}/topics/kvm-research.md) so future-you can find it.
 
 The user is reading on a card; the conversation is a graph they can branch from. Write so any response stands on its own — they may read it out of order.`;
@@ -131,6 +133,28 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['card_id'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'flag_card',
+    description:
+      'Mark a card as important — a turning point, critical insight, load-bearing decision, or counter-intuitive finding the user will want to find again. The card is shown emphasized on the canvas; the reason appears on hover. Use VERY sparingly: 0 on most turns, 1 max on turns with a genuine pivot. Flagging too many cards turns the signal into noise.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'string',
+          description:
+            'The card id, in the exact format "shape:abc123def" (lowercase prefix "shape:" then alphanumeric). Get valid ids from the BRANCH PATH section of your latest user message or by calling get_graph_summary. NEVER invent placeholder ids — the call will be rejected.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'One short sentence explaining why this card matters — shown to the user on hover. Be specific (≤140 chars).',
+        },
+      },
+      required: ['card_id', 'reason'],
     },
   },
   {

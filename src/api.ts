@@ -94,6 +94,14 @@ export type BranchProposal = {
   rationale: string;
 };
 
+// Card flag forwarded from the server when the agent calls the `flag_card`
+// custom tool. The client applies it to the conversation store (sets
+// emphasis=2 + records the reason on meta.agentFlagReason).
+export type CardFlag = {
+  cardId: string;
+  reason: string;
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
@@ -115,6 +123,7 @@ export async function streamGenerate(
     onSessionId?: (id: string) => void;
     onProposal?: (p: BranchProposal) => void;
     onActivity?: (text: string) => void;
+    onCardFlag?: (f: CardFlag) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -127,6 +136,7 @@ export async function streamGenerate(
     onSessionId,
     onProposal,
     onActivity,
+    onCardFlag,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -184,6 +194,12 @@ export async function streamGenerate(
             prompt: parsed.prompt,
             rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
           });
+        } else if (
+          parsed.type === 'card_flagged' &&
+          typeof parsed.cardId === 'string' &&
+          typeof parsed.reason === 'string'
+        ) {
+          onCardFlag?.({ cardId: parsed.cardId, reason: parsed.reason });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));
         }

@@ -27,6 +27,10 @@ export interface TurnMeta {
   // at a glance. Generated lazily by /api/labels (Haiku) after content
   // settles, then cached. Falls back to a content preview when missing.
   label?: string;
+  // Reason the agent flagged this card via the flag_card custom tool.
+  // Lives alongside emphasis = 2 (which is the visual cue) — this carries
+  // the *why* so the user can hover to read it. Cleared on un-flag.
+  agentFlagReason?: string;
 }
 
 export interface Turn {

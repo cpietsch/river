@@ -60,6 +60,10 @@ interface ConversationStore {
   setPredictions: (id: TurnId, predictions: AgentPrediction[]) => void;
   togglePrediction: (id: TurnId, label: string) => void;
   setLabel: (id: TurnId, label: string) => void;
+  // Agent-driven emphasis flip: sets emphasis=2 AND records the reason on
+  // meta.agentFlagReason so the UI can surface the why on hover. Distinct
+  // from the user-driven `setEmphasis` so the two intents don't tangle.
+  setAgentFlag: (id: TurnId, reason: string) => void;
   toggleChipSelected: (id: TurnId, term: string) => void;
   clearChipsSelected: (id: TurnId) => void;
   removeSubtree: (rootId: TurnId) => TurnId[];
@@ -171,6 +175,23 @@ export const useConversation = create<ConversationStore>()(
         turns: {
           ...s.turns,
           [id]: { ...t, meta: { ...t.meta, predictions } },
+        },
+      };
+    });
+  },
+
+  setAgentFlag: (id, reason) => {
+    set((s) => {
+      const t = s.turns[id];
+      if (!t) return s;
+      return {
+        turns: {
+          ...s.turns,
+          [id]: {
+            ...t,
+            emphasis: 2,
+            meta: { ...t.meta, agentFlagReason: reason.trim() || undefined },
+          },
         },
       };
     });

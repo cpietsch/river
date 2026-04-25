@@ -23,6 +23,7 @@ import {
 } from './api';
 import { useConversation } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
+import { syncStoreToTldraw } from './graph/sync';
 import { extractSpans } from './graph/extractSpans';
 import { stripMarkdown } from './graph/markdown';
 import type { TurnId } from './graph/types';
@@ -102,6 +103,15 @@ export function App() {
 
     const { turns, createTurn, getTurn } = useConversation.getState();
     const turnList = Object.values(turns);
+    // Initial sync: when the store loads with persisted turns (zustand
+    // persist hydrates synchronously before this point), the syncer's
+    // subscribe-only model never fires — nothing has changed. Without
+    // this manual flush, persisted turns sit in the store with no
+    // matching tldraw shapes, and the canvas reads as empty.
+    if (turnList.length > 0) {
+      syncStoreToTldraw(editor);
+      relayoutAll(editor);
+    }
     if (turnList.length === 0) {
       const id = createTurn({ role: 'user', parentId: null });
       setActiveId(id);

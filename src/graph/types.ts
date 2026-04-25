@@ -23,6 +23,10 @@ export interface TurnMeta {
   // ancestors rides forward as userContext using its question as the full
   // sentence.
   chipsSelected?: string[];
+  // 3-6 word title used by the map menu's tree view to summarize this card
+  // at a glance. Generated lazily by /api/labels (Haiku) after content
+  // settles, then cached. Falls back to a content preview when missing.
+  label?: string;
 }
 
 export interface Turn {

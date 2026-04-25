@@ -137,6 +137,18 @@ const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user migh
 
 const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
+const LABELS_SYSTEM = `You produce ultra-short titles for cards in a chat-as-graph UI. Each card is one user message or one assistant response. Your output powers a navigation menu: the user scans labels to find a card, so labels must be punchy and distinct.
+
+Rules:
+- 3-6 words per label
+- Sentence case (only first word capitalized; no period)
+- Capture the GIST, not a generic placeholder
+- For user cards: phrase as a topic ("Cooling fan tradeoffs", "How HDR works")
+- For assistant cards: phrase as the takeaway ("Liquid wins for sustained loads", "HDR maps tonal range")
+- No quotes, no emojis, no markdown
+
+Output ONLY a JSON object whose keys are the card ids and values are the labels. No prose, no fence.`;
+
 // Navigational summary kickoff. The brain agent's regular system prompt
 // already covers GRAPH INTROSPECTION mode + has the get_graph_summary /
 // get_card custom tools wired up. Here we just frame the request: shorter
@@ -666,6 +678,89 @@ app.post('/api/summarize', async (req, res) => {
         // ignore
       }
     }
+  }
+});
+
+/**
+ * Batch-label a set of cards. Single Haiku call returns one label per card.
+ * Used by the map menu's tree view: labels are computed once per card and
+ * cached client-side so the map opens instantly. The client only sends
+ * cards that don't yet have a label.
+ */
+app.post('/api/labels', async (req, res) => {
+  const { cards = [] } = req.body ?? {};
+  const filtered = (Array.isArray(cards) ? cards : [])
+    .filter(
+      (c) =>
+        c &&
+        typeof c.id === 'string' &&
+        (c.role === 'user' || c.role === 'assistant') &&
+        typeof c.content === 'string' &&
+        c.content.trim(),
+    )
+    .slice(0, 60);
+  if (filtered.length === 0) {
+    res.json({ labels: {} });
+    return;
+  }
+
+  const rendered = filtered
+    .map(
+      (c) =>
+        `[${c.id}] role=${c.role}\n${c.content.trim().slice(0, 600)}`,
+    )
+    .join('\n\n---\n\n');
+
+  const startedAt = Date.now();
+  logEvent('labels.start', { count: filtered.length });
+  try {
+    const response = await anthropic.messages.create({
+      model: MIST_MODEL,
+      max_tokens: 600,
+      system: LABELS_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Produce a label for each card. Output ONLY a JSON object {id: label}. Cards:\n\n${rendered}`,
+        },
+      ],
+    });
+    const raw = response.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('');
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) {
+      logEvent('labels.error', {
+        durationMs: Date.now() - startedAt,
+        message: 'no JSON object in response',
+      });
+      res.json({ labels: {} });
+      return;
+    }
+    const parsed = JSON.parse(raw.slice(start, end + 1));
+    const labels = {};
+    if (parsed && typeof parsed === 'object') {
+      for (const c of filtered) {
+        const v = parsed[c.id];
+        if (typeof v === 'string' && v.trim()) {
+          labels[c.id] = v.trim().slice(0, 80);
+        }
+      }
+    }
+    logEvent('labels.complete', {
+      durationMs: Date.now() - startedAt,
+      requested: filtered.length,
+      returned: Object.keys(labels).length,
+    });
+    res.json({ labels });
+  } catch (err) {
+    logEvent('labels.error', {
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
+    console.error('labels failed:', err?.message);
+    res.json({ labels: {} });
   }
 });
 

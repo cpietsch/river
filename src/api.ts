@@ -133,6 +133,32 @@ export async function streamGenerate(
   return full;
 }
 
+// Card-label batch input. The client only sends cards lacking labels.
+export type LabelCard = { id: string; role: 'user' | 'assistant'; content: string };
+
+/**
+ * Batch-label cards. Single Haiku round-trip; the server returns a
+ * `{id: label}` map. Used by the map menu's tree view to render a
+ * scannable summary of every card.
+ */
+export async function fetchLabels(
+  cards: LabelCard[],
+): Promise<Record<string, string>> {
+  if (cards.length === 0) return {};
+  try {
+    const res = await fetch('/api/labels', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cards }),
+    });
+    if (!res.ok) return {};
+    const data = (await res.json()) as { labels?: Record<string, string> };
+    return data.labels ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Streams a navigational summary of the conversation graph. The server
  * renders every card as text and asks the main model to produce a 2-paragraph

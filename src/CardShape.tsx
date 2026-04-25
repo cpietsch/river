@@ -502,19 +502,17 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Render prose with each `chipSpans` phrase wrapped as a tappable chip at
- * its first verbatim occurrence. Replaces the old `[[X]]` markup approach —
- * Sonnet now writes plain prose; Haiku post-process identifies the spans.
+ * Render prose with EVERY occurrence of each `chipSpans` phrase wrapped as
+ * a tappable chip. Marker-metaphor consistent: highlighting "MacBook Pro"
+ * marks every mention, not just the first. Toggle state is keyed by phrase
+ * so tapping any instance toggles all of them in unison.
  *
  * Algorithm:
- *  1. For each span (longest first, so e.g. "MacBook Pro M-series" beats
- *     "Pro" or "MacBook"), find its first case-insensitive occurrence in
- *     the text that doesn't overlap an already-claimed range.
+ *  1. For each span (longest first so "MacBook Pro M-series" claims its
+ *     range before "Pro" or "MacBook" can), find ALL non-overlapping
+ *     case-insensitive occurrences.
  *  2. Sort the resulting matches by start position.
  *  3. Walk text + matches alternately to render parts.
- *
- * `selected` keys by the canonical `phrase` (as returned by Haiku), not the
- * matched substring's exact case — so toggle state survives case drift.
  */
 function renderWithChipSpans(
   text: string,
@@ -534,13 +532,14 @@ function renderWithChipSpans(
       const idx = lower.indexOf(target, from);
       if (idx < 0) break;
       const end = idx + target.length;
+      // Skip occurrences that overlap a longer span we've already claimed.
       const overlaps = matches.some((m) => idx < m.end && end > m.start);
       if (overlaps) {
         from = end;
         continue;
       }
       matches.push({ start: idx, end, phrase: span.phrase });
-      break;
+      from = end;
     }
   }
   matches.sort((a, b) => a.start - b.start);

@@ -287,6 +287,11 @@ export function App() {
             .getState()
             .setContent(assistantId, buffer, { streaming: false });
         } else {
+          // Re-run the local extractor whenever a sentence ends so chips
+          // appear progressively as the response is read, instead of all at
+          // once when the stream finishes. extractSpans on a few-hundred-
+          // char buffer is sub-millisecond.
+          let lastSentenceEnd = 0;
           await streamGenerate(
             text,
             history.slice(0, -1),
@@ -295,6 +300,17 @@ export function App() {
               useConversation
                 .getState()
                 .setContent(assistantId, buffer, { streaming: true });
+              const trail = buffer.slice(lastSentenceEnd);
+              const m = trail.match(/^[\s\S]*[.!?](?:\s|$)/);
+              if (m) {
+                lastSentenceEnd += m[0].length;
+                const spans = extractSpans(buffer.slice(0, lastSentenceEnd));
+                if (spans.length > 0) {
+                  useConversation
+                    .getState()
+                    .setChipSpans(assistantId, spans);
+                }
+              }
             },
             undefined,
             emphasized,

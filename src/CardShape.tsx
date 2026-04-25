@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   HTMLContainer,
   Rectangle2d,
@@ -8,6 +8,22 @@ import {
   type TLBaseShape,
 } from 'tldraw';
 import { useCardActions } from './CardActions';
+
+// Mobile fix: with tldraw's hand tool active, the editor's pointer handler
+// races to setPointerCapture on the canvas root the moment a touch lands.
+// Even tiny finger drift before touchend makes the browser cancel the
+// synthesized click on the button. Calling setPointerCapture on the button
+// itself in pointerdown wins that race — the gesture stays anchored to the
+// button and click fires on touchend. stopPropagation prevents tldraw's
+// React-level handlers from running too.
+function tapPointerDown(e: ReactPointerEvent<HTMLElement>): void {
+  e.stopPropagation();
+  try {
+    e.currentTarget.setPointerCapture(e.pointerId);
+  } catch {
+    // Some browsers throw on capture for transient elements — ignore.
+  }
+}
 
 export type CardShape = TLBaseShape<
   'card',
@@ -76,15 +92,12 @@ export class CardShapeUtil extends ShapeUtil<CardShape> {
 }
 
 function CardBody({ shape }: { shape: CardShape }) {
-  const { role, content, streaming, w, h, layer, emphasis } = shape.props;
+  const { role, content, streaming, w, h, emphasis } = shape.props;
   const isUser = role === 'user';
-  const isReflection = layer === 'reflection';
-  const isPresumption = role === 'presumption';
   const actions = useCardActions();
   const isActive = actions?.activeId === shape.id;
   const contentRef = useRef<HTMLDivElement | null>(null);
   const resizeCard = actions?.resizeCard;
-  const reflectionsVisible = actions?.reflectionsVisible ?? true;
 
   // Measure the content block so the card's shape height matches exactly the
   // rendered text — one source of truth, no character-count heuristic.
@@ -97,7 +110,7 @@ function CardBody({ shape }: { shape: CardShape }) {
     // height with a bogus value or the card turns into a one-pixel sliver.
     if (measured <= 0) return;
     resizeCard(shape.id, measured);
-  }, [content, streaming, w, isActive, isUser, resizeCard, shape.id, reflectionsVisible]);
+  }, [content, streaming, w, isActive, isUser, resizeCard, shape.id]);
 
   // ACTIVE USER CARD = embedded chat input (only when content is still empty;
   // once submitted the card immediately shows the committed text).
@@ -105,41 +118,20 @@ function CardBody({ shape }: { shape: CardShape }) {
     return <ActiveInputCard w={w} h={h} />;
   }
 
-  // Color tokens keyed by role + layer.
-  const bg = isPresumption
-    ? '#faf4ff' // pale lavender
-    : isUser
-      ? '#fffef9'
-      : '#f2f7ff';
-  const borderColor = isPresumption
-    ? '#8a5cc4' // solid lavender — matches the active input card's 2px weight
-    : isUser
-      ? '#d4d2c8'
-      : '#a8c8ff';
+  const bg = isUser ? '#fffef9' : '#f2f7ff';
+  const borderColor = isUser ? '#d4d2c8' : '#a8c8ff';
 
   // Emphasis pushes the border red and thicker — visual weight doubles as a
   // prompt signal (see prompt-weighting pass in App.tsx).
   const emph = emphasis ?? 1;
   const isEmphasized = emph >= 2;
   const emphBorder = isEmphasized ? '#e24a4a' : borderColor;
-  // Presumption cards get 2px (same weight as the active input card) so they
-  // read as first-class-citizen choices, not a secondary sidebar.
-  const emphWidth = isEmphasized ? 2 : isPresumption ? 2 : 1;
-
-  // Reflection-layer cards still toggle off entirely via the X-ray button;
-  // when on, they render at full opacity (equal weight to action cards).
-  const layerOpacity = isReflection ? (reflectionsVisible ? 1 : 0) : 1;
-  const pointerEvents = isReflection && !reflectionsVisible ? 'none' : 'all';
-
-  const hoverTitle = isPresumption
-    ? ((shape.meta as { fullPresumption?: string } | undefined)?.fullPresumption ?? '')
-    : '';
+  const emphWidth = isEmphasized ? 2 : 1;
 
   return (
     <HTMLContainer
       id={shape.id}
       className="river-card"
-      title={hoverTitle}
       style={{
         width: w,
         height: h,
@@ -152,9 +144,7 @@ function CardBody({ shape }: { shape: CardShape }) {
         fontSize: 14,
         lineHeight: 1.5,
         overflow: 'hidden',
-        pointerEvents,
-        opacity: layerOpacity,
-        transition: 'opacity 220ms ease',
+        pointerEvents: 'all',
         boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04)',
       }}
     >
@@ -168,8 +158,7 @@ function CardBody({ shape }: { shape: CardShape }) {
           wordBreak: 'break-word',
           fontSize: 14,
           lineHeight: 1.5,
-          fontWeight: isPresumption ? 500 : 400,
-          color: content ? (isPresumption ? '#4a2d6b' : '#111') : '#bbb',
+          color: content ? '#111' : '#bbb',
           fontStyle: content ? 'normal' : 'italic',
         }}
       >
@@ -199,12 +188,8 @@ function CardBody({ shape }: { shape: CardShape }) {
         }}
       >
         <IconButton
-          label={isPresumption ? 'branch from this presumption' : 'branch'}
-          onClick={() =>
-            isPresumption
-              ? actions?.promoteReflection(shape.id)
-              : actions?.branchFrom(shape.id)
-          }
+          label="branch"
+          onClick={() => actions?.branchFrom(shape.id)}
         >
           <path
             d="M7 5v9a4 4 0 0 0 4 4h7M15 14l3 3-3 3"
@@ -245,7 +230,7 @@ function IconButton({
     <button
       type="button"
       aria-label={label}
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={tapPointerDown}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -284,9 +269,11 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 
   const input = actions?.input ?? '';
   const resizeActive = actions?.resizeActive;
+  const reflections = actions?.activeReflections ?? [];
 
   // Measure the actual content height so the growing textarea feeds a correct
-  // card height — no scrollbar, no wasted space.
+  // card height — no scrollbar, no wasted space. Re-runs when reflection
+  // pills land or change so the card grows to fit them.
   useLayoutEffect(() => {
     const ta = taRef.current;
     const root = rootRef.current;
@@ -296,10 +283,17 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     const measured = root.scrollHeight;
     if (measured <= 0) return; // culled/unmounted — leave stored height alone
     resizeActive(measured);
-  }, [input, resizeActive]);
+  }, [input, resizeActive, reflections]);
 
   if (!actions) return null;
-  const { onInputChange, submit, busy } = actions;
+  const {
+    onInputChange,
+    submit,
+    busy,
+    activeReflections,
+    activeToggled,
+    toggleReflection,
+  } = actions;
   const canSend = !busy && input.trim().length > 0;
 
   return (
@@ -325,10 +319,63 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
         display: 'flex',
         flexDirection: 'column',
         padding: '8px 10px 10px',
+        gap: 6,
       }}
     >
-      {/* Input bubble — the only thing in the active card now. Reflections
-          handle the "what should I ask next" surface, not suggestion pills. */}
+      {/* Reflection pills — implicit assumptions surfaced in first-person.
+          Tap to toggle: each toggled pill becomes part of `userContext` on
+          the next /api/generate call. Multiple selections are supported.
+          Filled lavender = on, outline = off. Title attr exposes the full
+          sentence for hover. */}
+      {activeReflections.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 4,
+          }}
+        >
+          {activeReflections.map((p, i) => {
+            const on = activeToggled.has(p.label.trim());
+            return (
+              <button
+                key={`refl-${i}`}
+                type="button"
+                title={p.full}
+                aria-pressed={on}
+                onPointerDown={tapPointerDown}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleReflection(p);
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  padding: '4px 10px',
+                  background: on ? '#8a5cc4' : '#faf4ff',
+                  border: `1px solid ${on ? '#8a5cc4' : '#c8a8e8'}`,
+                  color: on ? '#fff' : '#4a2d6b',
+                  borderRadius: 999,
+                  font: 'inherit',
+                  fontSize: 12,
+                  fontWeight: on ? 600 : 500,
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                  lineHeight: 1.4,
+                  whiteSpace: 'nowrap',
+                  maxWidth: '100%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  transition: 'background 120ms, color 120ms',
+                }}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div
         style={{
           display: 'flex',
@@ -347,7 +394,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
           disabled={busy}
           placeholder={busy ? 'thinking…' : 'ask the river…'}
           onChange={(e) => onInputChange(e.currentTarget.value)}
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={tapPointerDown}
           onKeyDown={(e) => {
             e.stopPropagation();
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -375,7 +422,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
         />
         <button
           type="button"
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={tapPointerDown}
           onClick={(e) => {
             e.stopPropagation();
             submit();
@@ -458,7 +505,7 @@ function BranchChip({ term, onClick }: { term: string; onClick: () => void }) {
   return (
     <button
       type="button"
-      onPointerDown={(e) => e.stopPropagation()}
+      onPointerDown={tapPointerDown}
       onClick={(e) => {
         e.stopPropagation();
         onClick();

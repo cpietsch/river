@@ -38,7 +38,7 @@ INLINE BRANCH-CHIPS: Wrap 2-4 key concepts, entities, or tributary-worthy ideas 
 
 const CHIP_QUESTIONS_SYSTEM = `You write the contextual question a reader would ask to dig deeper into each highlighted term in a card. The card's prose is given; the highlighted terms are listed. For each term, return one full-sentence question — anchored in the card's specific framing, not a generic "what is X" or "tell me more". Output ONLY a JSON object mapping term → question. No prose, no markdown fence. Example: {"NanoKVM": "how does NanoKVM differ from the Base in build quality and port layout?", "BMC chip": "why does the BMC chip choice dominate KVM-over-IP latency?"}`;
 
-const REFLECT_SYSTEM = `You are the reflection layer — you read the conversation and surface exactly 3 hidden assumptions it is taking for granted without examining them.
+const REFLECT_SYSTEM = `You are the reflection layer — you read the conversation and surface 6 hidden assumptions it is taking for granted without examining them. Always return exactly 6 — no fewer. Aim for diversity: each one should bite at the conversation from a different angle (cultural defaults, missing viewpoints, unstated values, scope assumptions, time-frame assumptions, identity assumptions). Avoid near-duplicates.
 
 VOICE: First person, from the asker's perspective. Write as if the user is hearing their own inner voice. Use "I", "my", "me". Never "the user", "you", or "they". Examples of the right voice: "I assume cost matters most", "I want a quick answer", "I believe newer means better".
 
@@ -55,7 +55,7 @@ const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user migh
 const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
 app.post('/api/generate', async (req, res) => {
-  const { history = [], input = '', emphasized = [] } = req.body ?? {};
+  const { history = [], input = '', emphasized = [], userContext = [] } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
     return;
@@ -64,17 +64,28 @@ app.post('/api/generate', async (req, res) => {
     ...history.filter((m) => m.role === 'user' || m.role === 'assistant'),
     { role: 'user', content: input },
   ];
-  // Visual emphasis on a canvas node maps directly into prompt weight: each
-  // emphasized card becomes a must-respect constraint at the top of the system
-  // prompt.
+  // System-prompt augmentations:
+  //  - emphasized: visual emphasis (heart icon on a card) becomes a hard
+  //    PRIORITY CONSTRAINT that the response should respect.
+  //  - userContext: presumption pills the user has toggled on next to the
+  //    input. Framing differs — these are first-person assumptions the user
+  //    is *carrying*, not directives to follow. The model should engage with
+  //    them (examine, accommodate, push back) rather than blindly obey.
   let systemPrompt = MAIN_SYSTEM_BASE;
+  const userCtx = (Array.isArray(userContext) ? userContext : [])
+    .filter((c) => typeof c === 'string' && c.trim())
+    .map((c) => `- ${c.trim()}`)
+    .join('\n');
+  if (userCtx) {
+    systemPrompt = `THE USER IS CARRYING THESE IMPLICIT ASSUMPTIONS (they tapped pills to surface them — engage with these explicitly: examine, challenge, or accommodate them, don't just restate them):\n${userCtx}\n\n${systemPrompt}`;
+  }
   if (Array.isArray(emphasized) && emphasized.length > 0) {
     const constraints = emphasized
       .filter((c) => typeof c === 'string' && c.trim())
       .map((c) => `- ${c.trim()}`)
       .join('\n');
     if (constraints) {
-      systemPrompt = `PRIORITY CONSTRAINTS (the user has visually emphasized these on the canvas — weight them heavily in your response):\n${constraints}\n\n${MAIN_SYSTEM_BASE}`;
+      systemPrompt = `PRIORITY CONSTRAINTS (the user has visually emphasized these on the canvas — weight them heavily in your response):\n${constraints}\n\n${systemPrompt}`;
     }
   }
   res.setHeader('Content-Type', 'text/event-stream');
@@ -155,14 +166,14 @@ app.post('/api/reflect', async (req, res) => {
   try {
     const response = await anthropic.messages.create({
       model: MIST_MODEL,
-      max_tokens: 500,
+      max_tokens: 900,
       system: REFLECT_SYSTEM,
       messages: [
         ...filteredHistory,
         {
           role: 'user',
           content:
-            'Name 2-4 implicit presumptions this conversation is carrying. Output the JSON array only.',
+            'Name exactly 6 distinct implicit presumptions this conversation is carrying. The array MUST contain 6 entries — count them. Output the JSON array only.',
         },
       ],
     });
@@ -186,7 +197,7 @@ app.post('/api/reflect', async (req, res) => {
         label: sentenceCase(x.label.trim()),
         full: x.full.trim(),
       }))
-      .slice(0, 3);
+      .slice(0, 7);
     res.json({ presumptions });
   } catch (err) {
     console.error('reflect failed:', err?.message);
@@ -247,3 +258,4 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }))
 app.listen(PORT, () => {
   console.log(`river-2 api on :${PORT}  main=${MAIN_MODEL}  mist=${MIST_MODEL}`);
 });
+ 

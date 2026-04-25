@@ -1,12 +1,19 @@
 import { createContext, useContext } from 'react';
 import type { TLShapeId } from 'tldraw';
+import type { Presumption } from './api';
 
 export interface CardActions {
   activeId: TLShapeId | null;
-  reflectionsVisible: boolean;
+  // Reflections for the active input card's parent assistant — rendered as
+  // inline pills above the textarea. Empty until the parent's reflections
+  // settle (or when there is no parent yet).
+  activeReflections: Presumption[];
+  // Subset of activeReflections labels the user has toggled on. Each toggled
+  // label's `full` sentence is sent as userContext on the next turn.
+  activeToggled: Set<string>;
   branchFrom: (turnId: TLShapeId) => void;
   branchAbout: (turnId: TLShapeId, term: string) => void;
-  promoteReflection: (turnId: TLShapeId) => void;
+  toggleReflection: (presumption: Presumption) => void;
   toggleEmphasis: (turnId: TLShapeId) => void;
   deleteCard: (turnId: TLShapeId) => void;
 

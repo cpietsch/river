@@ -63,11 +63,12 @@ export async function streamGenerate(
   onDelta: (text: string) => void,
   signal?: AbortSignal,
   emphasized: string[] = [],
+  userContext: string[] = [],
 ): Promise<string> {
   const res = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ input, history, emphasized }),
+    body: JSON.stringify({ input, history, emphasized, userContext }),
     signal,
   });
   if (!res.ok || !res.body) throw new Error(`generate failed ${res.status}`);

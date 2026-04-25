@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tldraw,
   toRichText,
@@ -22,6 +22,7 @@ import {
   fetchReflections,
   streamGenerate,
   type ChatMessage,
+  type Presumption,
 } from './api';
 
 const shapeUtils = [CardShapeUtil];
@@ -53,13 +54,27 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
-  const [reflectionsVisible, setReflectionsVisible] = useState(true);
-  // Mirror state in a ref so async spawners (fired from .then) read the
-  // current toggle without needing to re-create callbacks on each change.
-  const reflectionsVisibleRef = useRef(true);
+  // Reflections live inside the next user's chat input card as pills (like
+  // the old mist suggestions), keyed by the assistant card they reflect on.
+  // Mirrored to the assistant card's `meta.reflections` for persistence; this
+  // state map is the reactive source for ActiveInputCard.
+  const [reflectionsMap, setReflectionsMap] = useState<
+    Map<TLShapeId, Presumption[]>
+  >(new Map());
+  // Toggled-pill state: presumption labels per assistant card that the user
+  // has flipped "on". They become userContext on the next /api/generate call.
+  // Stored by label (not index) so re-fetches/re-orderings don't desync the
+  // toggle state. Mirrored to assistant.meta.reflectionsToggled for reload.
+  const [toggledMap, setToggledMap] = useState<Map<TLShapeId, Set<string>>>(
+    new Map(),
+  );
+  // Mirrored ref so runTurnFrom can read the up-to-date toggle state at
+  // submit time without depending on toggledMap (which would re-create the
+  // callback every toggle).
+  const toggledMapRef = useRef<Map<TLShapeId, Set<string>>>(new Map());
   useEffect(() => {
-    reflectionsVisibleRef.current = reflectionsVisible;
-  }, [reflectionsVisible]);
+    toggledMapRef.current = toggledMap;
+  }, [toggledMap]);
 
   // Precache toggle: when on, after each assistant card completes we fire
   // background main-model calls for every chip's contextual question and every
@@ -102,10 +117,27 @@ export function App() {
       { source: 'user', scope: 'session' },
     );
 
-    // On every mount, re-sync reflection arrows to the current toggle state —
-    // the effect alone runs before editorRef is populated and would no-op,
-    // leaving arrows at whatever opacity was persisted last session.
-    syncReflectionArrows(editor, reflectionsVisibleRef.current);
+    // Re-hydrate reflections + toggle state from persisted card meta. Without
+    // this, a reload would lose pills + their selected status until the next
+    // turn.
+    {
+      const seededRefl = new Map<TLShapeId, Presumption[]>();
+      const seededToggled = new Map<TLShapeId, Set<string>>();
+      for (const s of editor.getCurrentPageShapes()) {
+        if (s.type !== 'card') continue;
+        const meta = s.meta as
+          | { reflections?: Presumption[]; reflectionsToggled?: string[] }
+          | undefined;
+        if (Array.isArray(meta?.reflections) && meta.reflections.length > 0) {
+          seededRefl.set(s.id, meta.reflections);
+        }
+        if (Array.isArray(meta?.reflectionsToggled)) {
+          seededToggled.set(s.id, new Set(meta.reflectionsToggled));
+        }
+      }
+      if (seededRefl.size > 0) setReflectionsMap(seededRefl);
+      if (seededToggled.size > 0) setToggledMap(seededToggled);
+    }
 
     // Sweep orphaned arrows from prior sessions: any arrow whose bindings no
     // longer reach an existing shape. Accumulates across hot-reloads and crash
@@ -251,14 +283,6 @@ export function App() {
     [historyFor],
   );
 
-  // Sync reflection-arrow opacity to the X-ray toggle. Arrows have their own
-  // opacity property — the card's opacity doesn't cascade. Because the
-  // arrows are isLocked to prevent user drag, we unlock → update → relock;
-  // locked tldraw shapes silently reject updateShape calls.
-  useEffect(() => {
-    syncReflectionArrows(editorRef.current, reflectionsVisible);
-  }, [reflectionsVisible]);
-
   // Mobile: track the visual viewport so the input bar stays above the
   // software keyboard instead of being hidden behind it.
   useEffect(() => {
@@ -276,6 +300,29 @@ export function App() {
       vv.removeEventListener('scroll', update);
     };
   }, []);
+
+  // Persist reflections on the assistant card's meta and broadcast through
+  // the state map. Both feed ActiveInputCard's pill row, but `meta` survives
+  // reload while `reflectionsMap` provides cheap reactivity.
+  const stashReflections = useCallback(
+    (editor: Editor, assistantId: TLShapeId, presumptions: Presumption[]) => {
+      const a = editor.getShape(assistantId) as unknown as
+        | CardShape
+        | undefined;
+      if (!a) return;
+      editor.updateShape({
+        id: assistantId,
+        type: 'card',
+        meta: { ...(a.meta ?? {}), reflections: presumptions },
+      });
+      setReflectionsMap((m) => {
+        const next = new Map(m);
+        next.set(assistantId, presumptions);
+        return next;
+      });
+    },
+    [],
+  );
 
   const runTurnFrom = useCallback(
     async (userCardId: TLShapeId, text: string) => {
@@ -326,12 +373,31 @@ export function App() {
         // Collect all emphasized card contents in the conversation — these get
         // injected as priority constraints into the system prompt.
         const emphasized = gatherEmphasized(editor);
+        // userContext: presumption pills the user toggled on for this turn.
+        // Only relevant when the call originates from the active main-flow
+        // card — branches don't have a pill row. Map labels back to full
+        // sentences for richer context.
+        const branchParentId = getParentId(userCardId);
+        let userContext: string[] = [];
+        if (isFromActive && branchParentId) {
+          const toggled = toggledMapRef.current.get(branchParentId);
+          if (toggled && toggled.size > 0) {
+            const refl = reflectionsMap.get(branchParentId) ?? [];
+            userContext = refl
+              .filter((p) => toggled.has(p.label.trim()))
+              .map((p) => p.full.trim())
+              .filter((s) => s.length > 0);
+          }
+        }
         // Cache lookup: pill clicks and reflection promotions may have been
         // pre-warmed with the precache toggle on. Cache key uses the parent
         // (the assistant the branch springs from) + the prompt, which uniquely
-        // determines the would-be response.
-        const branchParentId = getParentId(userCardId);
-        const cacheK = branchParentId ? precacheKey(branchParentId, text) : null;
+        // determines the would-be response. We skip the cache when userContext
+        // is non-empty since the cached response wasn't conditioned on it.
+        const cacheK =
+          branchParentId && userContext.length === 0
+            ? precacheKey(branchParentId, text)
+            : null;
         const cached = cacheK ? precacheRef.current.get(cacheK) : undefined;
         let buffer = '';
         if (cached !== undefined) {
@@ -355,6 +421,7 @@ export function App() {
             },
             undefined,
             emphasized,
+            userContext,
           );
           editor.updateShape({
             id: assistantId,
@@ -432,27 +499,20 @@ export function App() {
             .catch(() => {});
         }
 
-        // Spawn the reflection layer: presumption cards that surface the
-        // implicit frame of this exchange, placed alongside the just-finished
-        // assistant card in a parallel column, each tied by a dashed arrow.
+        // Reflections live as inline pills inside the next user's chat input
+        // card. Store them on the assistant's meta (for persistence) AND in
+        // the reactive state map (so ActiveInputCard re-renders).
         const fullHistory = [...history, { role: 'assistant' as const, content: buffer }];
         fetchReflections(fullHistory)
           .then((presumptions) => {
-            spawnPresumptions(
-              editor,
-              assistantId,
-              presumptions,
-              reflectionsVisibleRef.current,
-            );
-            relayoutAll(editor);
+            stashReflections(editor, assistantId, presumptions);
             if (precacheEnabledRef.current) {
-              // promoteReflection sends the label lower-cased-first as the
-              // prompt; mirror that exactly so the cache key matches at click.
-              const promotionPrompts = presumptions.map((p) => {
-                const label = p.label.trim();
-                return label.charAt(0).toLowerCase() + label.slice(1);
-              });
-              warmCache(assistantId, promotionPrompts);
+              // submitReflection submits the bare label as the next user
+              // message — match that prompt exactly so the cache key lines up.
+              warmCache(
+                assistantId,
+                presumptions.map((p) => p.label.trim()),
+              );
             }
           })
           .catch(() => {});
@@ -467,7 +527,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [busy, activeId, historyFor, getParentId, warmCache],
+    [busy, activeId, historyFor, getParentId, warmCache, reflectionsMap, stashReflections],
   );
 
   const handleSubmit = useCallback(
@@ -534,31 +594,41 @@ export function App() {
     [createBranchUserCard, runTurnFrom],
   );
 
-  const promoteReflection = useCallback(
-    (presumptionId: TLShapeId) => {
+  // toggleReflection flips a presumption pill on/off for the active card's
+  // parent assistant. Toggled labels feed into the next turn as userContext —
+  // the model sees them as implicit assumptions the user is carrying.
+  // Mirrored to the assistant's meta so reloads preserve the selection.
+  const toggleReflection = useCallback(
+    (p: Presumption) => {
       const editor = editorRef.current;
-      if (!editor) return;
-      const p = editor.getShape(presumptionId) as unknown as CardShape | undefined;
-      if (!p || p.props.role !== 'presumption') return;
-      // Promote the reflection in place — it IS the user turn now, no need to
-      // clone its text into a new card. Flip role to 'user' and layer to
-      // 'action' so history-walking includes it, then run the turn from this
-      // same card. runTurnFrom will re-commit the content (with normalized
-      // casing) and spawn the assistant + next-user chain directly below.
-      editor.updateShape({
-        id: presumptionId,
-        type: 'card',
-        props: {
-          ...p.props,
-          role: 'user',
-          layer: 'action',
-        },
+      if (!editor || !activeId) return;
+      const parentId = getParentId(activeId);
+      if (!parentId) return;
+      const label = p.label.trim();
+      let nextSet: Set<string> = new Set();
+      setToggledMap((m) => {
+        const next = new Map(m);
+        const cur = new Set(next.get(parentId) ?? []);
+        if (cur.has(label)) cur.delete(label);
+        else cur.add(label);
+        next.set(parentId, cur);
+        nextSet = cur;
+        return next;
       });
-      const label = p.props.content.trim();
-      const query = label.charAt(0).toLowerCase() + label.slice(1);
-      void runTurnFrom(presumptionId, query);
+      // Persist to assistant meta so the toggles survive a reload.
+      const a = editor.getShape(parentId) as unknown as CardShape | undefined;
+      if (a) {
+        editor.updateShape({
+          id: parentId,
+          type: 'card',
+          meta: {
+            ...(a.meta ?? {}),
+            reflectionsToggled: Array.from(nextSet),
+          },
+        });
+      }
     },
-    [runTurnFrom],
+    [activeId, getParentId],
   );
 
   const toggleEmphasis = useCallback((id: TLShapeId) => {
@@ -619,6 +689,8 @@ export function App() {
     // by string across conversations and would serve stale responses.
     precacheRef.current.clear();
     precacheInFlightRef.current.clear();
+    setReflectionsMap(new Map());
+    setToggledMap(new Map());
     const all = editor.getCurrentPageShapes().map((s) => s.id);
     if (all.length > 0) editor.deleteShapes(all);
     const id = createShapeId();
@@ -686,32 +758,20 @@ export function App() {
 
     if (pairs.length === 0) return;
 
-    // Stale precache + stale reflection arrows + stale chipQuestions across
-    // every assistant being rerun.
+    // Stale precache + stale chipQuestions + stale reflections across every
+    // assistant being rerun. Reflections live on assistant.meta + map state.
     precacheRef.current.clear();
     precacheInFlightRef.current.clear();
-    for (const { assistantId } of pairs) {
-      const reflArrows = editor
-        .getCurrentPageShapes()
-        .filter(
-          (s) =>
-            s.type === 'arrow' &&
-            (s.meta as { kind?: string } | undefined)?.kind === 'reflection',
-        );
-      const toDelete: TLShapeId[] = [];
-      for (const arrow of reflArrows) {
-        const startB = editor
-          .getBindingsFromShape(arrow, 'arrow')
-          .find((b) => b.props.terminal === 'start');
-        if (startB?.toId !== assistantId) continue;
-        const endB = editor
-          .getBindingsFromShape(arrow, 'arrow')
-          .find((b) => b.props.terminal === 'end');
-        toDelete.push(arrow.id);
-        if (endB) toDelete.push(endB.toId as TLShapeId);
-      }
-      if (toDelete.length) editor.deleteShapes(toDelete);
-    }
+    setReflectionsMap((m) => {
+      const next = new Map(m);
+      for (const { assistantId } of pairs) next.delete(assistantId);
+      return next;
+    });
+    setToggledMap((m) => {
+      const next = new Map(m);
+      for (const { assistantId } of pairs) next.delete(assistantId);
+      return next;
+    });
 
     setBusy(true);
     try {
@@ -793,19 +853,12 @@ export function App() {
         ];
         fetchReflections(fullHistory)
           .then((presumptions) => {
-            spawnPresumptions(
-              editor,
-              assistantId,
-              presumptions,
-              reflectionsVisibleRef.current,
-            );
-            relayoutAll(editor);
+            stashReflections(editor, assistantId, presumptions);
             if (precacheEnabledRef.current) {
-              const promotionPrompts = presumptions.map((p) => {
-                const label = p.label.trim();
-                return label.charAt(0).toLowerCase() + label.slice(1);
-              });
-              warmCache(assistantId, promotionPrompts);
+              warmCache(
+                assistantId,
+                presumptions.map((p) => p.label.trim()),
+              );
             }
           })
           .catch(() => {});
@@ -813,7 +866,7 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [busy, historyFor, warmCache]);
+  }, [busy, historyFor, warmCache, stashReflections]);
 
   function onInputChange(text: string): void {
     setInput(text);
@@ -841,32 +894,41 @@ export function App() {
     if (Math.abs(current.props.h - h) >= 1) {
       editor.updateShape({ id, type: 'card', props: { h } });
     }
-    if (current.props.layer === 'reflection') {
-      // Reflection cards shrink to their short labels after measurement; they
-      // were initially placed assuming CARD_HEIGHT_MIN, leaving big gaps.
-      // Re-stack the whole sidebar against actual measured heights.
-      const sourceId = (
-        current.meta as { reflectionSource?: TLShapeId } | undefined
-      )?.reflectionSource;
-      if (sourceId) restackReflections(editor, sourceId);
-      return;
-    }
     // After any resize, re-flow downstream cards so the vertical gap between
     // parent-bottom and child-top stays constant. This keeps the elbow arrows
     // short and uniform even when cards shrink after their initial placement.
     repositionChain(editor, id);
   }, []);
 
+  // The active input card sits under the latest assistant; show that
+  // assistant's reflections as inline pills above the textarea. Memoize so
+  // the empty-array reference is stable across renders and useLayoutEffect
+  // in ActiveInputCard doesn't fire on every parent re-render.
+  const activeReflections = useMemo<Presumption[]>(() => {
+    if (!activeId) return EMPTY_REFLECTIONS;
+    const parentId = getParentId(activeId);
+    if (!parentId) return EMPTY_REFLECTIONS;
+    return reflectionsMap.get(parentId) ?? EMPTY_REFLECTIONS;
+  }, [activeId, reflectionsMap, getParentId]);
+
+  const activeToggled = useMemo<Set<string>>(() => {
+    if (!activeId) return EMPTY_TOGGLED;
+    const parentId = getParentId(activeId);
+    if (!parentId) return EMPTY_TOGGLED;
+    return toggledMap.get(parentId) ?? EMPTY_TOGGLED;
+  }, [activeId, toggledMap, getParentId]);
+
   return (
     <CardActionsContext.Provider
       value={{
         branchFrom,
         branchAbout,
-        promoteReflection,
+        toggleReflection,
         toggleEmphasis,
         deleteCard,
         activeId,
-        reflectionsVisible,
+        activeReflections,
+        activeToggled,
         input,
         setInput,
         onInputChange,
@@ -895,7 +957,7 @@ export function App() {
         shapeUtils={shapeUtils}
         components={components}
         onMount={handleMount}
-        persistenceKey="river-2-reflection"
+        persistenceKey="river-2-inline"
         hideUi
         inferDarkMode={false}
       />
@@ -976,42 +1038,6 @@ export function App() {
             />
           </svg>
           rerun
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setReflectionsVisible((v) => !v)}
-          aria-label="Toggle reflection layer"
-          data-testid="toggle-reflections"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '10px 14px',
-            background: reflectionsVisible ? '#4a2d6b' : '#fff',
-            color: reflectionsVisible ? '#fff' : '#4a2d6b',
-            border: '1px solid #4a2d6b',
-            borderRadius: 999,
-            font: 'inherit',
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: 'pointer',
-            boxShadow: '0 3px 10px rgba(0,0,0,0.1)',
-            WebkitTapHighlightColor: 'transparent',
-            minHeight: 40,
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path
-              d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" fill={reflectionsVisible ? 'currentColor' : 'none'} />
-          </svg>
-          {reflectionsVisible ? 'reflection on' : 'reflection off'}
         </button>
 
         <button
@@ -1123,6 +1149,15 @@ export function App() {
         /* Card actions fade in on hover — ambient when idle, discoverable on interaction */
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
+        /* Mobile taps: html/body have touch-action:none to silence tldraw's
+           preventDefault warnings, which also blocks tap synthesis on inner
+           elements. Re-enable taps on every interactive element rendered
+           inside a tldraw shape's HTML layer. */
+        .tl-html-container button,
+        .tl-html-container textarea,
+        .tl-html-container [role="button"] {
+          touch-action: manipulation;
+        }
       `}</style>
     </div>
     </CardActionsContext.Provider>
@@ -1250,9 +1285,8 @@ function RiverCtxMenu({
 const CARD_GAP_Y = 40;
 const CARD_GAP_X = 80;
 const COLUMN_WIDTH = CARD_WIDTH + CARD_GAP_X;
-// Reflections stack as a tight sidebar — they're alternate angles on the same
-// turn, so visually they should read as a list, not a separate conversation.
-const REFLECTION_GAP_Y = 10;
+const EMPTY_REFLECTIONS: Presumption[] = [];
+const EMPTY_TOGGLED: Set<string> = new Set();
 
 /**
  * Tidy-tree layout. Anchors on the current root's (x, y) and recomputes every
@@ -1282,8 +1316,8 @@ function relayoutAll(editor: Editor): void {
       if (!endBinding) continue;
       const childId = endBinding.toId as TLShapeId;
       const childShape = editor.getShape(childId) as unknown as CardShape | undefined;
-      // Reflection children don't participate in action-tree layout — they're
-      // positioned by spawnPresumptions in their own sidebar column.
+      // Defensive: ignore any leftover reflection-layer shape from earlier
+      // schema versions. This branch never creates them anymore.
       if (!childShape || childShape.props.layer === 'reflection') continue;
       children.get(s.id)?.push(childId);
       hasParent.add(childId);
@@ -1363,41 +1397,6 @@ function repositionChain(editor: Editor, sourceId: TLShapeId): void {
 }
 
 /**
- * Re-stack all reflection-layer cards belonging to a given assistant source
- * so each presumption sits flush against the previous one's measured bottom.
- * Called after a presumption card's height settles via `resizeCard` —
- * presumptions are spawned at CARD_HEIGHT_MIN-stride and shrink afterwards,
- * leaving big gaps unless we re-pack them.
- */
-function restackReflections(
-  editor: Editor,
-  sourceAssistantId: TLShapeId,
-): void {
-  const source = editor.getShape(sourceAssistantId) as unknown as
-    | CardShape
-    | undefined;
-  if (!source) return;
-  const cards = editor
-    .getCurrentPageShapes()
-    .filter((s): s is CardShape => s.type === 'card')
-    .map((s) => s as unknown as CardShape)
-    .filter(
-      (c) =>
-        c.props.layer === 'reflection' &&
-        (c.meta as { reflectionSource?: TLShapeId } | undefined)
-          ?.reflectionSource === sourceAssistantId,
-    )
-    .sort((a, b) => a.y - b.y);
-  let y = source.y;
-  for (const c of cards) {
-    if (Math.abs(c.y - y) >= 1) {
-      editor.updateShape({ id: c.id, type: 'card', y });
-    }
-    y += c.props.h + REFLECTION_GAP_Y;
-  }
-}
-
-/**
  * Collect the content of every emphasized (emphasis >= 2) card. These strings
  * are injected as priority constraints at the top of the LLM system prompt,
  * so visual weight on the canvas becomes semantic weight in the model.
@@ -1410,95 +1409,6 @@ function gatherEmphasized(editor: Editor): string[] {
     .filter((c) => (c.props.emphasis ?? 1) >= 2 && c.props.content.trim() !== '')
     .map((c) => c.props.content.trim());
 }
-
-/**
- * Place reflection-layer presumption cards adjacent to the assistant they
- * reflect on. Styled as first-class citizens — same width and typographic
- * weight as the input card — so the reflections are equal-footing options,
- * not a background aside. Their lavender border and dashed provenance arrow
- * keep them readable as "the other layer."
- */
-function syncReflectionArrows(editor: Editor | null, visible: boolean): void {
-  if (!editor) return;
-  const arrows = editor
-    .getCurrentPageShapes()
-    .filter(
-      (s) =>
-        s.type === 'arrow' &&
-        (s.meta as { kind?: string } | undefined)?.kind === 'reflection',
-    );
-  const target = visible ? 0.7 : 0;
-  for (const a of arrows) {
-    if (a.opacity === target) continue;
-    editor.updateShape({ id: a.id, type: 'arrow', isLocked: false });
-    editor.updateShape({ id: a.id, type: 'arrow', opacity: target });
-    editor.updateShape({ id: a.id, type: 'arrow', isLocked: true });
-  }
-}
-
-function spawnPresumptions(
-  editor: Editor,
-  sourceAssistantId: TLShapeId,
-  presumptions: Array<{ label: string; full: string }>,
-  visible = true,
-): void {
-  if (!presumptions.length) return;
-  const source = editor.getShape(sourceAssistantId) as unknown as CardShape | undefined;
-  if (!source) return;
-
-  // Walk right from the source's column until we find a column with no action
-  // cards in the vertical band we'd occupy. Reflections now live to the right
-  // of the assistant they reflect on; collision detection keeps them off of
-  // any existing action branch column.
-  const actionCards = editor
-    .getCurrentPageShapes()
-    .filter((s): s is CardShape => s.type === 'card')
-    .map((s) => s as unknown as CardShape)
-    .filter((c) => c.props.layer === 'action');
-  const minY = source.y;
-  const maxY =
-    source.y + presumptions.length * (CARD_HEIGHT_MIN + REFLECTION_GAP_Y);
-  let reflectX = source.x + CARD_WIDTH + CARD_GAP_X;
-  const isOccupied = (x: number) =>
-    actionCards.some(
-      (c) =>
-        Math.abs(c.x - x) < CARD_WIDTH / 2 &&
-        c.y + c.props.h > minY &&
-        c.y < maxY,
-    );
-  while (isOccupied(reflectX)) {
-    reflectX += COLUMN_WIDTH;
-  }
-
-  let y = source.y;
-  for (const p of presumptions) {
-    const id = createShapeId();
-    editor.createShape({
-      id,
-      type: 'card',
-      x: reflectX,
-      y,
-      meta: { reflectionSource: sourceAssistantId, fullPresumption: p.full },
-      props: {
-        w: CARD_WIDTH,
-        h: CARD_HEIGHT_MIN,
-        role: 'presumption',
-        layer: 'reflection',
-        emphasis: 1,
-        // Display the terse label — the full sentence lives in meta for hover.
-        content: p.label,
-        streaming: false,
-      },
-    });
-    // Dashed lavender arrow from the assistant card to each presumption so
-    // the provenance is visually explicit, not just positional.
-    connectReflection(editor, sourceAssistantId, id, visible);
-    // Advance by the actual measured-then-settled height (rough estimate
-    // here; repositionChain would fix it if presumptions had children).
-    y += CARD_HEIGHT_MIN + REFLECTION_GAP_Y;
-  }
-}
-
 
 function connect(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
   const arrowId = createShapeId();
@@ -1545,66 +1455,6 @@ function connect(editor: Editor, fromId: TLShapeId, toId: TLShapeId): void {
     });
   } catch (err) {
     console.warn('connect failed — skipping arrow', err);
-  }
-}
-
-/**
- * Reflection-layer arrow: dashed light-violet tie from an assistant card to
- * one of its presumptions on the right-side sidebar. Anchors right-to-left so
- * the arrow reads as "thinking leaking sideways," not as a continuation.
- */
-function connectReflection(
-  editor: Editor,
-  fromId: TLShapeId,
-  toId: TLShapeId,
-  visible = true,
-): void {
-  const arrowId = createShapeId();
-  try {
-    editor.createShape({
-      id: arrowId,
-      type: 'arrow',
-      x: 0,
-      y: 0,
-      isLocked: true,
-      opacity: visible ? 0.7 : 0,
-      meta: { kind: 'reflection' },
-      props: {
-        kind: 'elbow',
-        color: 'light-violet',
-        size: 's',
-        dash: 'dashed',
-        arrowheadStart: 'none',
-        arrowheadEnd: 'arrow',
-        richText: toRichText(''),
-      },
-    });
-    editor.createBinding({
-      type: 'arrow',
-      fromId: arrowId,
-      toId: fromId,
-      props: {
-        terminal: 'start',
-        normalizedAnchor: { x: 1, y: 0.5 }, // right edge of assistant
-        isExact: false,
-        isPrecise: true,
-        snap: 'none',
-      },
-    });
-    editor.createBinding({
-      type: 'arrow',
-      fromId: arrowId,
-      toId: toId,
-      props: {
-        terminal: 'end',
-        normalizedAnchor: { x: 0, y: 0.5 }, // left edge of presumption
-        isExact: false,
-        isPrecise: true,
-        snap: 'none',
-      },
-    });
-  } catch (err) {
-    console.warn('connectReflection failed — skipping arrow', err);
   }
 }
 

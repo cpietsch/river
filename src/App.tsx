@@ -1022,9 +1022,9 @@ export function App() {
       )}
 
 
-      {/* ─── Map overlay (semantic navigation) ─── */}
+      {/* ─── Map nav-bar (semantic navigation) ─── */}
       {mapText !== null && (
-        <MapOverlay
+        <MapBar
           text={mapText}
           busy={mapBusy}
           onClose={closeMap}
@@ -1108,7 +1108,7 @@ const toolbarBtn: React.CSSProperties = {
   minHeight: 40,
 };
 
-/* ─── Map overlay (semantic navigation) ─── */
+/* ─── Map nav-bar (semantic navigation) ─── */
 
 // Card references in the prose use `[card:shape:xxx]` syntax. Split the text
 // into alternating prose / button segments so we can render the buttons
@@ -1116,7 +1116,13 @@ const toolbarBtn: React.CSSProperties = {
 // after the `shape:` prefix.
 const CARD_REF_RX = /\[card:(shape:[A-Za-z0-9_-]+)\]/g;
 
-function MapOverlay({
+/**
+ * Thin floating navigation strip below the toolbar. Streams in the navigation
+ * summary inline; card references render as small "jump" pills that pan the
+ * camera to that card. Reduced visual weight — translucent backdrop, single
+ * line where possible. The canvas remains interactive while the bar is open.
+ */
+function MapBar({
   text,
   busy,
   onClose,
@@ -1127,7 +1133,8 @@ function MapOverlay({
   onClose: () => void;
   onCardClick: (id: TurnId) => void;
 }) {
-  // Hit Escape to close. Modal pattern — single keydown listener while open.
+  // ESC closes. The bar doesn't trap focus / clicks (canvas stays usable),
+  // so we hook the global keydown directly.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -1136,9 +1143,14 @@ function MapOverlay({
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  // Parse the text into prose + card-ref segments. While streaming, a partial
-  // marker like "[card:shape:abc" at the tail is left as plain text — it'll
-  // resolve once the closing ']' arrives.
+  // Auto-scroll the strip to the right as text streams in, so the latest
+  // sentence + most recent jump-pill stay in view.
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, [text]);
+
   const turns = useConversation((s) => s.turns);
   const segments = useMemo(() => {
     const out: Array<
@@ -1161,109 +1173,130 @@ function MapOverlay({
     return out;
   }, [text, turns]);
 
+  // While idle (no text yet), show a faint "thinking…" hint instead of an
+  // empty strip — gives the bar presence the moment the user clicks "map".
+  const isEmpty = text.trim().length === 0;
+
   return (
     <div
-      role="dialog"
-      aria-modal="true"
+      role="status"
+      aria-live="polite"
       aria-label="Conversation map"
       style={{
         position: 'fixed',
-        inset: 0,
-        background: 'rgba(20, 18, 14, 0.42)',
-        backdropFilter: 'blur(2px)',
-        zIndex: 2000,
+        top: 'calc(64px + env(safe-area-inset-top))',
+        left: 'calc(12px + env(safe-area-inset-left))',
+        right: 'calc(12px + env(safe-area-inset-right))',
+        zIndex: 1500,
         display: 'flex',
-        alignItems: 'center',
         justifyContent: 'center',
-        padding: 'max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom))',
+        pointerEvents: 'none',
       }}
-      onClick={onClose}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: 640,
+          pointerEvents: 'auto',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
           width: '100%',
-          maxHeight: '100%',
-          overflowY: 'auto',
-          background: '#fbfaf6',
-          border: '1px solid #1a1a1a',
-          borderRadius: 14,
-          boxShadow: '0 16px 48px rgba(0,0,0,0.24)',
-          padding: '22px 24px 20px',
-          fontFamily: '"Source Serif 4", Georgia, serif',
-          fontSize: 16.5,
-          lineHeight: 1.55,
+          maxWidth: 720,
+          padding: '8px 10px 8px 14px',
+          background: 'rgba(255, 255, 255, 0.92)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          border: '1px solid rgba(26,26,26,0.12)',
+          borderRadius: 999,
+          boxShadow: '0 4px 18px rgba(0,0,0,0.08)',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontSize: 13,
+          lineHeight: 1.4,
           color: '#1a1a1a',
         }}
       >
-        <div
+        <span
+          aria-hidden
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 14,
-            fontFamily: 'system-ui, -apple-system, sans-serif',
-            fontSize: 12,
-            letterSpacing: 0.5,
-            textTransform: 'uppercase',
-            color: '#6b6660',
+            flex: '0 0 auto',
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: busy ? '#2e6ecf' : '#9a9590',
+            boxShadow: busy ? '0 0 0 4px rgba(46,110,207,0.18)' : 'none',
+            transition: 'background 200ms, box-shadow 200ms',
+          }}
+        />
+        <div
+          ref={scrollerRef}
+          style={{
+            flex: '1 1 auto',
+            minWidth: 0,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            whiteSpace: 'nowrap',
+            scrollbarWidth: 'none',
+            color: isEmpty ? '#9a9590' : '#1a1a1a',
           }}
         >
-          <span>map of this canvas{busy ? ' · streaming' : ''}</span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close map"
-            style={{
-              border: 'none',
-              background: 'none',
-              padding: 4,
-              cursor: 'pointer',
-              color: '#6b6660',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div style={{ whiteSpace: 'pre-wrap' }}>
-          {segments.map((seg, i) =>
-            seg.kind === 'text' ? (
-              <span key={i}>{seg.value}</span>
-            ) : (
-              <button
-                key={i}
-                type="button"
-                disabled={!seg.valid}
-                onClick={() => seg.valid && onCardClick(seg.id)}
-                title={seg.valid ? 'Pan to this card' : 'Card no longer exists'}
-                style={{
-                  display: 'inline',
-                  padding: '1px 8px',
-                  margin: '0 1px',
-                  background: seg.valid ? '#2e6ecf' : '#cccccc',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 999,
-                  font: 'inherit',
-                  fontSize: '0.88em',
-                  cursor: seg.valid ? 'pointer' : 'not-allowed',
-                  WebkitTapHighlightColor: 'transparent',
-                  verticalAlign: 'baseline',
-                  lineHeight: 1.3,
-                }}
-              >
-                jump
-              </button>
-            ),
+          {isEmpty ? (
+            <span>reading the canvas…</span>
+          ) : (
+            <>
+              {segments.map((seg, i) =>
+                seg.kind === 'text' ? (
+                  <span key={i}>{seg.value}</span>
+                ) : (
+                  <button
+                    key={i}
+                    type="button"
+                    disabled={!seg.valid}
+                    onClick={() => seg.valid && onCardClick(seg.id)}
+                    title={seg.valid ? 'Pan to this card' : 'Card no longer exists'}
+                    style={{
+                      display: 'inline-block',
+                      padding: '0 8px',
+                      margin: '0 2px',
+                      background: seg.valid ? '#2e6ecf' : '#cccccc',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 999,
+                      font: 'inherit',
+                      fontSize: 12,
+                      fontWeight: 500,
+                      cursor: seg.valid ? 'pointer' : 'not-allowed',
+                      WebkitTapHighlightColor: 'transparent',
+                      verticalAlign: 'baseline',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    ↗
+                  </button>
+                ),
+              )}
+              {busy && <span className="river-cursor">▍</span>}
+            </>
           )}
-          {busy && <span className="river-cursor">▍</span>}
         </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close map"
+          style={{
+            flex: '0 0 auto',
+            border: 'none',
+            background: 'none',
+            padding: 4,
+            cursor: 'pointer',
+            color: '#6b6660',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+          </svg>
+        </button>
       </div>
     </div>
   );

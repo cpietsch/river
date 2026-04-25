@@ -137,24 +137,35 @@ const MIST_SYSTEM = `You are "mist" — you predict 2-4 diverse ways a user migh
 
 const FOLLOWUP_SYSTEM = `You suggest 2-4 diverse follow-up questions or directions the user might want to explore next. Output ONLY a JSON array of objects with keys "label" (max 6 words, title-case) and "full" (the complete question). No prose, no markdown fence. Just the array.`;
 
-// Navigational summary of the conversation tree. The frontend opens this in a
-// modal overlay; card references in the prose are parsed back into clickable
-// buttons that pan the camera to the card. The exact \`[card:shape:xxx]\`
-// syntax is load-bearing — the parser keys off it.
-const NAV_SYSTEM = `You are producing a navigational map of an ongoing conversation rendered as cards on an infinite canvas.
+// Navigational summary kickoff. The brain agent's regular system prompt
+// already covers GRAPH INTROSPECTION mode + has the get_graph_summary /
+// get_card custom tools wired up. Here we just frame the request: shorter
+// length than a normal answer, MUST reference cards via [card:shape:xxx]
+// syntax (the client parses these into clickable jump-pills).
+function buildSummarizeKickoff(graph) {
+  const turns = Object.values(graph?.turns ?? {});
+  const rendered = turns
+    .map(
+      (t) =>
+        `[${t.id}] role=${t.role} parent=${t.parentId ?? 'none'}\n${(t.content ?? '').trim()}`,
+    )
+    .join('\n\n---\n\n');
+  return `MODE: navigational map (overrides default LENGTH and FORMATTING).
 
-You will receive the full conversation graph. Each card has:
-- an id like "shape:abc123"
-- a role (user or assistant)
-- a parentId (or null for the root)
-- the content
+The user wants a thin overview of the conversation graph rendered as cards on the canvas. Speak directly to them as a guide ("you started with…", "you branched here…"). Past tense for prior turns.
 
-Write 2 short paragraphs (60-180 words total, separated by a blank line) that help the user re-find their own thinking:
-- Identify the main thread, any branches, turning points, threads still open.
-- Reference specific cards inline using the EXACT syntax: [card:shape:abc123]. The UI renders these as clickable buttons that pan to the card. Reference 3-6 cards across the response.
-- Voice: speak to the user as a guide ("you started with…", "you branched here…"). Past tense for prior turns.
+LENGTH: 1 short paragraph, 40-90 words. Tight, scannable.
 
-NO bullet lists, NO headers, NO code fences, NO links. Plain prose.`;
+REFERENCES: When you mention a specific card, use the EXACT syntax \`[card:shape:abc123]\` inline — the UI renders these as clickable jump-pills that pan the camera to that card. Reference 3-5 cards across the response. The id MUST match a card from the graph below verbatim.
+
+NO bullet lists, NO headers, NO code fences, NO links. Plain prose.
+
+GRAPH (every card the user has on their canvas):
+
+${rendered}
+
+Write the navigational map now.`;
+}
 
 /**
  * Build the kickoff user-message body that the Managed Agent session sees.
@@ -538,55 +549,108 @@ app.post('/api/summarize', async (req, res) => {
     res.status(400).json({ error: 'graph empty' });
     return;
   }
+  if (!AGENT_ID || !ENV_ID) {
+    res.status(500).json({ error: 'agent not configured — run `npm run setup-agent`' });
+    return;
+  }
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
 
-  // Render the graph as one user message. The summary doesn't need tools or
-  // memory — every card is already in the snapshot. One-shot Messages call
-  // is faster + cheaper than spinning up a Managed Agent session.
-  const rendered = turnList
-    .map(
-      (t) =>
-        `[${t.id}] role=${t.role} parent=${t.parentId ?? 'none'}\n${(t.content ?? '').trim()}`,
-    )
-    .join('\n\n---\n\n');
-
+  const text = buildSummarizeKickoff(graph);
   const startedAt = Date.now();
   logEvent('summarize.start', { turnCount: turnList.length });
+
+  let session;
+  let sessionId = null;
+  let totalChars = 0;
+  let customToolUses = 0;
   try {
-    const stream = await anthropic.messages.stream({
-      model: MAIN_MODEL,
-      max_tokens: 600,
-      system: NAV_SYSTEM,
-      messages: [
-        {
-          role: 'user',
-          content: `Here is the conversation graph:\n\n${rendered}\n\nWrite the navigational map.`,
-        },
+    // Use the same brain agent — it already has get_graph_summary / get_card
+    // custom tools and the GRAPH INTROSPECTION block in its system prompt.
+    // Skip the memory store: nav summaries don't need persistent memory and
+    // attaching it adds latency for no benefit.
+    session = await anthropic.beta.sessions.create({
+      agent: AGENT_ID,
+      environment_id: ENV_ID,
+      title: `map · ${turnList.length} cards`,
+    });
+    sessionId = session.id;
+    logEvent('summarize.session_created', { sessionId });
+
+    const streamPromise = anthropic.beta.sessions.events.stream(session.id);
+    await anthropic.beta.sessions.events.send(session.id, {
+      events: [
+        { type: 'user.message', content: [{ type: 'text', text }] },
       ],
     });
-    let total = 0;
+    const stream = await streamPromise;
+
+    let lastEmitted = '';
     for await (const event of stream) {
+      if (event.type === 'agent.message' && Array.isArray(event.content)) {
+        const chunk = event.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+        if (chunk && chunk !== lastEmitted) {
+          res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`);
+          lastEmitted = chunk;
+          totalChars = chunk.length;
+        }
+      }
+      if (event.type === 'agent.custom_tool_use') {
+        customToolUses += 1;
+        logEvent('summarize.custom_tool_use', {
+          sessionId,
+          tool: event.name,
+        });
+        const result = resolveGraphTool(event.name, event.input, graph);
+        try {
+          await anthropic.beta.sessions.events.send(session.id, {
+            events: [
+              {
+                type: 'user.custom_tool_result',
+                custom_tool_use_id: event.id,
+                content: [{ type: 'text', text: result }],
+              },
+            ],
+          });
+        } catch (err) {
+          console.error('summarize: custom_tool_result send failed:', err?.message);
+        }
+        continue;
+      }
+      if (event.type === 'session.status_terminated') break;
       if (
-        event.type === 'content_block_delta' &&
-        event.delta?.type === 'text_delta'
+        event.type === 'session.status_idle' &&
+        event.stop_reason?.type !== 'requires_action'
       ) {
-        const t = event.delta.text;
-        total += t.length;
-        res.write(`data: ${JSON.stringify({ type: 'delta', text: t })}\n\n`);
+        break;
+      }
+      if (event.type === 'session.error') {
+        res.write(
+          `data: ${JSON.stringify({
+            type: 'error',
+            message: event.error?.message ?? 'session error',
+          })}\n\n`,
+        );
+        break;
       }
     }
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
     logEvent('summarize.end', {
+      sessionId,
       durationMs: Date.now() - startedAt,
-      chars: total,
+      chars: totalChars,
       turnCount: turnList.length,
+      customToolUses,
     });
   } catch (err) {
     logEvent('summarize.error', {
+      sessionId,
       durationMs: Date.now() - startedAt,
       message: String(err?.message ?? err),
     });
@@ -595,6 +659,13 @@ app.post('/api/summarize', async (req, res) => {
     );
   } finally {
     res.end();
+    if (session) {
+      try {
+        await anthropic.beta.sessions.delete(session.id);
+      } catch (_) {
+        // ignore
+      }
+    }
   }
 });
 

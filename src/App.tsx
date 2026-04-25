@@ -193,7 +193,11 @@ export function App() {
   }, []);
 
   const runTurnFrom = useCallback(
-    async (userTurnId: TurnId, text: string) => {
+    async (
+      userTurnId: TurnId,
+      text: string,
+      opts: { skipUserContext?: boolean } = {},
+    ) => {
       const editor = editorRef.current;
       const store = useConversation.getState();
       if (!editor || busy) return;
@@ -217,8 +221,10 @@ export function App() {
         const branchParentId = getParentId(userTurnId);
 
         // userContext = labels the user has toggled on for this turn's parent.
+        // Skipped when the user's message IS those labels (sent via send-with-
+        // empty-input + toggled pills); otherwise the LLM sees them twice.
         let userContext: string[] = [];
-        if (isFromActive && branchParentId) {
+        if (isFromActive && branchParentId && !opts.skipUserContext) {
           const parent = store.getTurn(branchParentId);
           const toggled = new Set(parent?.meta.reflectionsToggled ?? []);
           const refl = parent?.meta.reflections ?? [];
@@ -345,11 +351,30 @@ export function App() {
   const handleSubmit = useCallback(
     async (overrideText?: string) => {
       if (!activeId) return;
-      const text = (overrideText ?? input).trim();
-      if (!text) return;
-      await runTurnFrom(activeId, text);
+      let text = (overrideText ?? input).trim();
+      let usedTogglesAsMessage = false;
+      // Sending with an empty input is allowed when at least one reflection
+      // pill is toggled — the toggled pills' first-person sentences become
+      // the user's message. The pill row IS the input in that case.
+      if (!text) {
+        const parentId = getParentId(activeId);
+        if (parentId) {
+          const parent = useConversation.getState().getTurn(parentId);
+          const toggled = new Set(parent?.meta.reflectionsToggled ?? []);
+          const refl = parent?.meta.reflections ?? [];
+          const selected = refl.filter((p) => toggled.has(p.label.trim()));
+          if (selected.length > 0) {
+            text = selected.map((p) => p.full.trim()).join(' ');
+            usedTogglesAsMessage = true;
+          }
+        }
+        if (!text) return;
+      }
+      await runTurnFrom(activeId, text, {
+        skipUserContext: usedTogglesAsMessage,
+      });
     },
-    [activeId, input, runTurnFrom],
+    [activeId, input, runTurnFrom, getParentId],
   );
 
   // Branching: createTurn under sourceId; the syncer wires up the arrow.

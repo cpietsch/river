@@ -301,7 +301,10 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     activeToggled,
     toggleReflection,
   } = actions;
-  const canSend = !busy && input.trim().length > 0;
+  // Send is enabled when there's typed input OR at least one reflection pill
+  // is toggled — the pill row counts as input on its own.
+  const canSend =
+    !busy && (input.trim().length > 0 || activeToggled.size > 0);
 
   return (
     <HTMLContainer

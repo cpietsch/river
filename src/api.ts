@@ -1,5 +1,22 @@
 export type ChatMessage = { role: 'user' | 'assistant'; content: string };
 
+// Fire-and-forget client telemetry. Posted to /api/log where the server
+// appends to ./logs/YYYY-MM-DD.jsonl alongside the server-side generate/
+// agents events. `type` must start with "client." — the server enforces
+// this so clients can't masquerade as server events. Errors are swallowed:
+// logging never blocks UX.
+export function logEvent(type: string, data: Record<string, unknown> = {}): void {
+  try {
+    void fetch('/api/log', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type, ...data }),
+    });
+  } catch {
+    // ignore
+  }
+}
+
 export type MistCandidate = { label: string; full: string };
 
 // Each agent (assumption / skeptic / expander / …) produces predictions in

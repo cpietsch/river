@@ -1,6 +1,28 @@
 import 'dotenv/config';
 import express from 'express';
 import Anthropic from '@anthropic-ai/sdk';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Structured JSONL logging — one file per UTC day under ./logs/. Used to
+// analyze sessions after the fact (which agents fire, how often the brain
+// reaches for tools, average response length, branching patterns, errors).
+// Each line is a self-describing JSON object: {ts, type, ...data}.
+const LOG_DIR = path.resolve(process.cwd(), 'logs');
+function ensureLogDir() {
+  if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+function logEvent(type, data = {}) {
+  try {
+    ensureLogDir();
+    const ts = new Date().toISOString();
+    const date = ts.slice(0, 10);
+    const file = path.join(LOG_DIR, `${date}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify({ ts, type, ...data }) + '\n');
+  } catch (err) {
+    console.error('log failed:', err?.message);
+  }
+}
 
 const PORT = Number(process.env.PORT ?? 4000);
 const MAIN_MODEL = process.env.MAIN_MODEL ?? 'claude-sonnet-4-6';
@@ -213,8 +235,20 @@ app.post('/api/generate', async (req, res) => {
   res.flushHeaders?.();
 
   const text = buildKickoffMessage(history, input, emphasized, userContext);
+  const startedAt = Date.now();
+  logEvent('generate.start', {
+    inputLen: input.length,
+    historyLen: history.length,
+    emphasizedCount: Array.isArray(emphasized) ? emphasized.length : 0,
+    userContextCount: Array.isArray(userContext) ? userContext.length : 0,
+    graphSize: graph?.turns ? Object.keys(graph.turns).length : 0,
+  });
 
   let session;
+  let sessionId = null;
+  let totalChars = 0;
+  let toolUses = 0;
+  let customToolUses = 0;
   try {
     const sessionParams = {
       agent: AGENT_ID,
@@ -233,6 +267,8 @@ app.post('/api/generate', async (req, res) => {
       ];
     }
     session = await anthropic.beta.sessions.create(sessionParams);
+    sessionId = session.id;
+    logEvent('generate.session_created', { sessionId });
 
     // Stream-first: open the SSE stream BEFORE sending the kickoff so we
     // don't miss early events. (See `shared/managed-agents-events.md` →
@@ -263,12 +299,27 @@ app.post('/api/generate', async (req, res) => {
         if (chunk && chunk !== lastEmitted) {
           res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`);
           lastEmitted = chunk;
+          totalChars = chunk.length;
         }
+      }
+      // Built-in tool use (web_search, web_fetch, bash, file ops...)
+      if (event.type === 'agent.tool_use') {
+        toolUses += 1;
+        logEvent('generate.tool_use', {
+          sessionId,
+          tool: event.name,
+        });
       }
       // Custom tool calls — resolve them locally against the graph snapshot
       // the client sent and reply with user.custom_tool_result. The session
       // goes idle (requires_action) until we send the result, then resumes.
       if (event.type === 'agent.custom_tool_use') {
+        customToolUses += 1;
+        logEvent('generate.custom_tool_use', {
+          sessionId,
+          tool: event.name,
+          input: event.input ?? null,
+        });
         const result = resolveGraphTool(event.name, event.input, graph);
         try {
           await anthropic.beta.sessions.events.send(session.id, {
@@ -296,6 +347,10 @@ app.post('/api/generate', async (req, res) => {
         break;
       }
       if (event.type === 'session.error') {
+        logEvent('generate.error', {
+          sessionId,
+          message: event.error?.message ?? 'session error',
+        });
         res.write(
           `data: ${JSON.stringify({
             type: 'error',
@@ -306,7 +361,19 @@ app.post('/api/generate', async (req, res) => {
       }
     }
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    logEvent('generate.end', {
+      sessionId,
+      durationMs: Date.now() - startedAt,
+      responseChars: totalChars,
+      toolUses,
+      customToolUses,
+    });
   } catch (err) {
+    logEvent('generate.error', {
+      sessionId,
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
     res.write(
       `data: ${JSON.stringify({ type: 'error', message: String(err?.message ?? err) })}\n\n`,
     );
@@ -418,16 +485,44 @@ app.post('/api/agents', async (req, res) => {
   const agentIds = Array.isArray(agents) && agents.length > 0
     ? agents.filter((a) => typeof a === 'string' && AGENTS[a])
     : Object.keys(AGENTS);
+  const startedAt = Date.now();
   try {
     const results = await Promise.all(
       agentIds.map((id) => runOneAgent(id, filteredHistory)),
     );
-    // Flatten — each prediction already carries its `agent` tag.
-    res.json({ predictions: results.flat() });
+    const flat = results.flat();
+    logEvent('agents.complete', {
+      durationMs: Date.now() - startedAt,
+      historyLen: filteredHistory.length,
+      predictionsByAgent: agentIds.reduce((acc, id, i) => {
+        acc[id] = results[i].length;
+        return acc;
+      }, {}),
+      total: flat.length,
+    });
+    res.json({ predictions: flat });
   } catch (err) {
+    logEvent('agents.error', {
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
     console.error('agents failed:', err?.message);
     res.json({ predictions: [] });
   }
+});
+
+// Client-side event logging. The browser hits this with `client.*` events
+// (chip toggles, sends, branches, deletes...) so the same JSONL file
+// captures the full session trace alongside the server-side generate/agents
+// events. Type prefix is enforced — clients can't masquerade as server.
+app.post('/api/log', (req, res) => {
+  const { type, ...rest } = req.body ?? {};
+  if (typeof type !== 'string' || !type.startsWith('client.')) {
+    res.status(400).json({ error: 'type must start with "client."' });
+    return;
+  }
+  logEvent(type, rest);
+  res.json({ ok: true });
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }));

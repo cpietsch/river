@@ -16,6 +16,7 @@ import {
 import { CardActionsContext } from './CardActions';
 import {
   fetchAgentPredictions,
+  logEvent,
   streamGenerate,
   type ChatMessage,
   type AgentPrediction,
@@ -232,6 +233,7 @@ export function App() {
   const toggleChipSelected = useCallback(
     (cardId: TurnId, term: string) => {
       useConversation.getState().toggleChipSelected(cardId, term.trim());
+      logEvent('client.chip_toggle', { cardId, term: term.trim() });
     },
     [],
   );
@@ -479,11 +481,30 @@ export function App() {
         }
         if (!text) return;
       }
+
+      // Capture the shape of this send for analytics: how often does the user
+      // type vs. ride pills/chips forward, how many selections, how many
+      // emphasized ancestors are in flight.
+      const parentId = getParentId(activeId);
+      const togglesCount = parentId
+        ? (useConversation.getState().getTurn(parentId)?.meta.predictionsToggled ?? []).length
+        : 0;
+      const chipCount = gatherSelectedChips(activeId).length;
+      const emphasizedCount = gatherEmphasized().length;
+      logEvent('client.send', {
+        userTurnId: activeId,
+        textLen: text.length,
+        usedSelectionsAsMessage,
+        toggledPredictions: togglesCount,
+        selectedChips: chipCount,
+        emphasized: emphasizedCount,
+      });
+
       await runTurnFrom(activeId, text, {
         skipUserContext: usedSelectionsAsMessage,
       });
     },
-    [activeId, input, runTurnFrom, getParentId, gatherSelectedChips],
+    [activeId, input, runTurnFrom, getParentId, gatherSelectedChips, gatherEmphasized],
   );
 
   // Branching: createTurn under sourceId; the syncer wires up the arrow.
@@ -508,7 +529,10 @@ export function App() {
   const branchFrom = useCallback(
     (turnId: TurnId) => {
       const newId = createBranchUserTurn(turnId);
-      if (newId) setActiveId(newId);
+      if (newId) {
+        setActiveId(newId);
+        logEvent('client.branch', { fromId: turnId, newId });
+      }
     },
     [createBranchUserTurn],
   );
@@ -519,6 +543,11 @@ export function App() {
       const parentId = getParentId(activeId);
       if (!parentId) return;
       useConversation.getState().togglePrediction(parentId, p.label.trim());
+      logEvent('client.prediction_toggle', {
+        parentId,
+        agent: p.agent,
+        label: p.label.trim(),
+      });
     },
     [activeId, getParentId],
   );
@@ -528,6 +557,7 @@ export function App() {
     if (!t) return;
     const next = (t.emphasis ?? 1) >= 2 ? 1 : 2;
     useConversation.getState().setEmphasis(id, next);
+    logEvent('client.emphasis_toggle', { id, emphasis: next });
   }, []);
 
   const deleteCard = useCallback(
@@ -535,6 +565,7 @@ export function App() {
       const removed = new Set(
         useConversation.getState().removeSubtree(turnId),
       );
+      logEvent('client.delete', { turnId, removedCount: removed.size });
       if (activeId && removed.has(activeId)) {
         // Re-seat active on the most recent empty user turn, or last turn.
         const turns = Object.values(useConversation.getState().turns);
@@ -551,6 +582,9 @@ export function App() {
   const startNew = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
+    logEvent('client.start_new', {
+      priorTurns: Object.keys(useConversation.getState().turns).length,
+    });
     precacheRef.current.clear();
     precacheInFlightRef.current.clear();
     useConversation.getState().reset();

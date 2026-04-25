@@ -63,6 +63,8 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 
 **Persistence keys.** zustand: `river-2-graph` (localStorage, conversation graph). tldraw: `persistenceKey="river-2-graph"` (IndexedDB, shape positions). Bump both when the schema changes meaningfully.
 
+**JSONL session logs.** `server.js` appends every server-side and client-side event to `./logs/YYYY-MM-DD.jsonl` (one line per event: `{ts, type, ...data}`). Server emits `generate.{start,session_created,tool_use,custom_tool_use,end,error}` and `agents.{complete,error}`. Client posts `client.{chip_toggle,prediction_toggle,emphasis_toggle,branch,delete,start_new,send}` via `POST /api/log`. Type prefix `client.` is enforced server-side. `logs/` is gitignored.
+
 ## Design principles (saved as memories)
 
 - **Reduce visual complexity** — invisible default states, discoverability via hover, no upfront decoration on dense interactive surfaces.

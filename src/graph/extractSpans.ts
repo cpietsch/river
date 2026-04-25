@@ -43,16 +43,46 @@ export function extractSpans(text: string): ChipSpan[] {
   const lowerText = text.toLowerCase();
 
   function add(phrase: string): void {
-    // Strip leading/trailing punctuation; also strip a possessive "'s"
-    // tail so "LuckFox's" → "LuckFox" rather than the possessive form.
+    // Strip leading/trailing punctuation (including em/en dashes which
+    // compromise occasionally leaves attached); strip a possessive "'s"
+    // tail so "LuckFox's" → "LuckFox".
     let trimmed = phrase
       .trim()
-      .replace(/[.,;:!?'"]+$/, '')
-      .replace(/^[.,;:!?'"]+/, '')
+      .replace(/[.,;:!?'"—–\-]+$/, '')
+      .replace(/^[.,;:!?'"—–\-]+/, '')
       .replace(/['’]s$/i, '')
       .trim();
     if (!trimmed) return;
-    const words = trimmed.split(/\s+/);
+    // Drop very short artifacts (single chars like "F" from "325°F" tokens).
+    if (trimmed.length < 2) return;
+    // Reject phrases that span a sentence/clause boundary — internal commas
+    // or semicolons mean compromise glued two unrelated phrases together.
+    if (/[,;]/.test(trimmed)) return;
+
+    // Strip leading articles / determiners / common qualifiers from
+    // multi-word phrases. compromise returns noun phrases with their
+    // leading "the"/"a"/"this"/etc., which we don't want as part of the
+    // chip label. Loop because a phrase can have multiple leading
+    // function words ("most of the time" → "time" eventually).
+    let words = trimmed.split(/\s+/);
+    while (
+      words.length > 1 &&
+      STOPWORDS.has(words[0].toLowerCase().replace(/[.,;:!?'"]+/g, ''))
+    ) {
+      words.shift();
+    }
+    // Symmetric: strip trailing function words too ("a flaky connection ,"
+    // already handled by punctuation strip; covers cases compromise might
+    // include like "loose and").
+    while (
+      words.length > 1 &&
+      STOPWORDS.has(words[words.length - 1].toLowerCase().replace(/[.,;:!?'"]+/g, ''))
+    ) {
+      words.pop();
+    }
+    trimmed = words.join(' ').trim();
+    if (!trimmed) return;
+
     const wc = words.length;
     if (wc < 1 || wc > 5) return;
     // Single-word stopwords (capitalized or not) never qualify — sentence-
@@ -72,6 +102,13 @@ export function extractSpans(text: string): ChipSpan[] {
   for (const p of doc.people().out('array') as string[]) add(p);
   for (const p of doc.places().out('array') as string[]) add(p);
   for (const o of doc.organizations().out('array') as string[]) add(o);
+
+  // ADJ+NOUN compounds — compromise's nouns() sometimes misses these
+  // ("categorical imperative", "moral worth", "supply chain"). Pattern
+  // match catches them universally regardless of topic.
+  for (const m of doc.match('#Adjective+ #Noun+').out('array') as string[]) {
+    add(m);
+  }
 
   // ── regex pass: technical compounds, acronyms, numeric units ──
 

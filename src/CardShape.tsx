@@ -8,6 +8,7 @@ import {
   type TLBaseShape,
 } from 'tldraw';
 import { useCardActions } from './CardActions';
+import type { ChipSpan } from './api';
 
 // Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
 // synthesized click on touchend often never fires on the button — so onClick
@@ -202,13 +203,15 @@ function CardBody({ shape }: { shape: CardShape }) {
         }}
       >
         {content
-          ? renderWithBranchChips(
+          ? renderWithChipSpans(
               content,
+              (shape.meta as { chipSpans?: ChipSpan[] } | undefined)
+                ?.chipSpans ?? [],
               new Set(
                 (shape.meta as { chipsSelected?: string[] } | undefined)
                   ?.chipsSelected ?? [],
               ),
-              (term) => actions?.toggleChipSelected(shape.id, term),
+              (phrase) => actions?.toggleChipSelected(shape.id, phrase),
             )
           : 'thinking…'}
         {streaming && <span className="river-cursor">▊</span>}
@@ -499,40 +502,66 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Parse `[[term]]` markers inside assistant text. Tapping a chip toggles its
- * selected state in-place on the source card (no branch, no pill movement).
- * Selected chips fill blue; unselected stay outline. On submit, every
- * selected chip across the active chain's ancestors rides forward as
- * userContext (see App.tsx handleSubmit / runTurnFrom).
+ * Render prose with each `chipSpans` phrase wrapped as a tappable chip at
+ * its first verbatim occurrence. Replaces the old `[[X]]` markup approach —
+ * Sonnet now writes plain prose; Haiku post-process identifies the spans.
+ *
+ * Algorithm:
+ *  1. For each span (longest first, so e.g. "MacBook Pro M-series" beats
+ *     "Pro" or "MacBook"), find its first case-insensitive occurrence in
+ *     the text that doesn't overlap an already-claimed range.
+ *  2. Sort the resulting matches by start position.
+ *  3. Walk text + matches alternately to render parts.
+ *
+ * `selected` keys by the canonical `phrase` (as returned by Haiku), not the
+ * matched substring's exact case — so toggle state survives case drift.
  */
-function renderWithBranchChips(
+function renderWithChipSpans(
   text: string,
+  spans: ChipSpan[],
   selected: Set<string>,
-  onChipClick: (term: string) => void,
+  onChipClick: (phrase: string) => void,
 ): React.ReactNode {
-  const parts: React.ReactNode[] = [];
-  const regex = /\[\[([^\[\]]+?)\]\]/g;
-  let lastIdx = 0;
-  let match: RegExpExecArray | null;
-  let chipKey = 0;
-  while ((match = regex.exec(text))) {
-    if (match.index > lastIdx) {
-      parts.push(text.slice(lastIdx, match.index));
+  type Match = { start: number; end: number; phrase: string };
+  const matches: Match[] = [];
+  const lower = text.toLowerCase();
+  const sorted = [...spans].sort((a, b) => b.phrase.length - a.phrase.length);
+  for (const span of sorted) {
+    const target = span.phrase.toLowerCase();
+    if (!target) continue;
+    let from = 0;
+    while (from < lower.length) {
+      const idx = lower.indexOf(target, from);
+      if (idx < 0) break;
+      const end = idx + target.length;
+      const overlaps = matches.some((m) => idx < m.end && end > m.start);
+      if (overlaps) {
+        from = end;
+        continue;
+      }
+      matches.push({ start: idx, end, phrase: span.phrase });
+      break;
     }
-    const term = match[1].trim();
+  }
+  matches.sort((a, b) => a.start - b.start);
+
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let chipKey = 0;
+  for (const m of matches) {
+    if (m.start > cursor) parts.push(text.slice(cursor, m.start));
+    const visible = text.slice(m.start, m.end);
     parts.push(
       <BranchChip
         key={`chip-${chipKey++}`}
-        term={term}
-        on={selected.has(term)}
-        onClick={() => onChipClick(term)}
+        term={visible}
+        on={selected.has(m.phrase)}
+        onClick={() => onChipClick(m.phrase)}
       />,
     );
-    lastIdx = match.index + match[0].length;
+    cursor = m.end;
   }
-  if (lastIdx < text.length) {
-    parts.push(text.slice(lastIdx));
-  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
   return parts;
 }
 
@@ -545,27 +574,33 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
+  // Unselected chips blend in (subtle dotted underline) so the prose stays
+  // readable even with many chips; selected chips fill solid blue and
+  // become unmistakable. Hovering an unselected chip nudges it forward
+  // (light tint + solid underline) so the affordance is discoverable.
   return (
     <button
       type="button"
+      className={on ? 'river-chip on' : 'river-chip'}
       onPointerDown={tap(onClick)}
       aria-pressed={on}
       title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
       style={{
         display: 'inline',
-        padding: '1px 8px',
+        padding: on ? '1px 8px' : '0 1px',
         margin: '0 1px',
-        background: on ? '#2e6ecf' : '#fff',
-        border: `1px solid ${on ? '#2e6ecf' : '#a8c8ff'}`,
-        color: on ? '#fff' : '#2e6ecf',
-        borderRadius: 999,
+        background: on ? '#2e6ecf' : 'transparent',
+        border: 'none',
+        borderRadius: on ? 999 : 0,
+        borderBottom: on ? 'none' : '1px dotted #2e6ecf',
+        color: on ? '#fff' : 'inherit',
         font: 'inherit',
-        fontSize: 13,
-        fontWeight: on ? 600 : 500,
+        fontSize: 'inherit',
+        fontWeight: on ? 600 : 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
-        lineHeight: 1.4,
-        transition: 'background 120ms, color 120ms',
+        lineHeight: 'inherit',
+        transition: 'background 120ms, color 120ms, border-color 120ms',
       }}
     >
       {term}

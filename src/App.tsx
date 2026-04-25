@@ -15,7 +15,7 @@ import {
 } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
-  fetchChipQuestions,
+  fetchChipSpans,
   fetchAgentPredictions,
   streamGenerate,
   type ChatMessage,
@@ -204,7 +204,7 @@ export function App() {
   );
 
   // Gather every selected chip across the active chain — `full` for each
-  // comes from that source card's chipQuestions[term].
+  // comes from that source card's chipSpans entry (the contextual question).
   const gatherSelectedChips = useCallback(
     (leafId: TurnId): { full: string; cardId: TurnId; term: string }[] => {
       const ancestors = useConversation.getState().getAncestors(leafId);
@@ -212,9 +212,10 @@ export function App() {
       for (const t of ancestors) {
         const sel = t.meta.chipsSelected ?? [];
         if (sel.length === 0) continue;
-        const qs = t.meta.chipQuestions ?? {};
+        const spans = t.meta.chipSpans ?? [];
         for (const term of sel) {
-          const full = (qs[term] ?? term).trim();
+          const span = spans.find((s) => s.phrase === term);
+          const full = (span?.question ?? term).trim();
           if (full) out.push({ full, cardId: t.id, term });
         }
       }
@@ -348,27 +349,20 @@ export function App() {
           }
         }
 
-        // Chip questions (Haiku): each chip carries a contextual hover
-        // sentence keyed by its term. Sonnet's natural chip selection
-        // (~3-5 per response) is enough — the augmentation pass we
-        // experimented with overcrowded the prose.
-        const chipTerms = Array.from(
-          new Set(
-            [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
-              m[1].trim(),
-            ),
-          ),
-        );
-        if (chipTerms.length > 0) {
-          fetchChipQuestions(buffer, chipTerms)
-            .then((questions) => {
-              useConversation.getState().setChipQuestions(assistantId, questions);
-              if (precacheEnabledRef.current) {
-                warmCache(assistantId, Object.values(questions));
-              }
-            })
-            .catch(() => {});
-        }
+        // Chip spans (Haiku): identify selectable phrase-spans inside the
+        // assistant's prose along with each one's contextual hover question.
+        // The renderer wraps each span's first verbatim occurrence as a
+        // tappable chip. Universal — works on any topic without Sonnet
+        // having to author [[X]] markers.
+        fetchChipSpans(buffer)
+          .then((spans) => {
+            if (spans.length === 0) return;
+            useConversation.getState().setChipSpans(assistantId, spans);
+            if (precacheEnabledRef.current) {
+              warmCache(assistantId, spans.map((s) => s.question));
+            }
+          })
+          .catch(() => {});
 
         // Reflections (Haiku) — populates assistant.meta.predictions, which
         // ActiveInputCard renders as the pill row.
@@ -592,25 +586,15 @@ export function App() {
           .getState()
           .setContent(assistantId, buffer, { streaming: false });
 
-        const chipTerms = Array.from(
-          new Set(
-            [...buffer.matchAll(/\[\[([^\[\]]+?)\]\]/g)].map((m) =>
-              m[1].trim(),
-            ),
-          ),
-        );
-        if (chipTerms.length > 0) {
-          fetchChipQuestions(buffer, chipTerms)
-            .then((questions) => {
-              useConversation
-                .getState()
-                .setChipQuestions(assistantId, questions);
-              if (precacheEnabledRef.current) {
-                warmCache(assistantId, Object.values(questions));
-              }
-            })
-            .catch(() => {});
-        }
+        fetchChipSpans(buffer)
+          .then((spans) => {
+            if (spans.length === 0) return;
+            useConversation.getState().setChipSpans(assistantId, spans);
+            if (precacheEnabledRef.current) {
+              warmCache(assistantId, spans.map((s) => s.question));
+            }
+          })
+          .catch(() => {});
 
         const fullHistory = [
           ...history,
@@ -894,6 +878,12 @@ export function App() {
         .river-input-wrap ::-webkit-scrollbar { display: none; }
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
+        /* Inline chip — unselected blends in (dotted underline). Hover hints
+           tappability; selected styling is inline. */
+        .river-chip:not(.on):hover {
+          background: rgba(46, 110, 207, 0.08) !important;
+          border-bottom: 1px solid #2e6ecf !important;
+        }
         .tl-html-container button,
         .tl-html-container textarea,
         .tl-html-container [role="button"] {

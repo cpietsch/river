@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { createShapeId } from 'tldraw';
-import type { AgentPrediction } from '../api';
+import type { AgentPrediction, ChipSpan } from '../api';
 import type { Turn, TurnId, TurnMeta, TurnRole } from './types';
 
 interface NewTurnInit {
@@ -26,7 +26,7 @@ interface ConversationStore {
   ) => void;
   setStreaming: (id: TurnId, streaming: boolean) => void;
   setEmphasis: (id: TurnId, emphasis: number) => void;
-  setChipQuestions: (id: TurnId, questions: Record<string, string>) => void;
+  setChipSpans: (id: TurnId, spans: ChipSpan[]) => void;
   setPredictions: (id: TurnId, predictions: AgentPrediction[]) => void;
   togglePrediction: (id: TurnId, label: string) => void;
   toggleChipSelected: (id: TurnId, term: string) => void;
@@ -91,14 +91,14 @@ export const useConversation = create<ConversationStore>()(
     });
   },
 
-  setChipQuestions: (id, chipQuestions) => {
+  setChipSpans: (id, chipSpans) => {
     set((s) => {
       const t = s.turns[id];
       if (!t) return s;
       return {
         turns: {
           ...s.turns,
-          [id]: { ...t, meta: { ...t.meta, chipQuestions } },
+          [id]: { ...t, meta: { ...t.meta, chipSpans } },
         },
       };
     });

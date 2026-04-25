@@ -30,22 +30,24 @@ export async function fetchAgentPredictions(
   }
 }
 
-export async function fetchChipQuestions(
-  cardContent: string,
-  terms: string[],
-): Promise<Record<string, string>> {
-  if (!terms.length) return {};
+// A selectable span identified inside any prose response. The `phrase`
+// appears verbatim in the source text; `question` is the contextual hover
+// sentence and the prompt the chip rides forward as.
+export type ChipSpan = { phrase: string; question: string };
+
+export async function fetchChipSpans(text: string): Promise<ChipSpan[]> {
+  if (!text.trim()) return [];
   try {
-    const res = await fetch('/api/chip-questions', {
+    const res = await fetch('/api/chip-spans', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cardContent, terms }),
+      body: JSON.stringify({ text }),
     });
-    if (!res.ok) return {};
-    const data = (await res.json()) as { questions?: Record<string, string> };
-    return data.questions ?? {};
+    if (!res.ok) return [];
+    const data = (await res.json()) as { spans?: ChipSpan[] };
+    return data.spans ?? [];
   } catch {
-    return {};
+    return [];
   }
 }
 

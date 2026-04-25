@@ -1,5 +1,5 @@
 import type { TLShapeId } from 'tldraw';
-import type { AgentPrediction } from '../api';
+import type { AgentPrediction, ChipSpan } from '../api';
 
 // Turn IDs reuse tldraw's TLShapeId so the graph store and the canvas share
 // a single id space — a turn and its rendered card shape are the same id.
@@ -8,18 +8,20 @@ export type TurnId = TLShapeId;
 export type TurnRole = 'user' | 'assistant';
 
 export interface TurnMeta {
-  // Map of [[term]] -> contextual question, populated post-stream by Haiku.
-  chipQuestions?: Record<string, string>;
+  // The selectable phrase-spans Haiku identified in the assistant's prose,
+  // along with each one's contextual hover question. The card renderer
+  // wraps each span's first verbatim occurrence as a tappable chip.
+  chipSpans?: ChipSpan[];
   // Predictions from all agents for this assistant turn — flat, each entry
   // tagged with its agent id. Pills above the next user input read this.
   predictions?: AgentPrediction[];
   // Labels of predictions the user has toggled "on" for the next turn.
   // Stored as labels (not indices) so re-fetches don't desync.
   predictionsToggled?: string[];
-  // Inline chip terms the user has tapped on this card. Toggleable in-place
-  // (not moved to the input row). On submit, every selected chip across the
-  // active chain's ancestors rides forward as userContext using its
-  // chipQuestions[term] entry as the full sentence.
+  // Inline chip phrases the user has tapped on this card. Toggleable
+  // in-place. On submit, every selected chip across the active chain's
+  // ancestors rides forward as userContext using its question as the full
+  // sentence.
   chipsSelected?: string[];
 }
 

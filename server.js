@@ -203,13 +203,31 @@ function renderConstraintsAndContext(emphasized, userContext) {
   return parts;
 }
 
+function renderBranchPath(pathIds) {
+  const ids = (Array.isArray(pathIds) ? pathIds : []).filter(
+    (id) => typeof id === 'string' && id.trim(),
+  );
+  if (!ids.length) return null;
+  const chain = ids
+    .map((id, i) => (i === ids.length - 1 ? `${id} (current)` : id))
+    .join(' → ');
+  // Header naming the chain so the agent has card ids ready (avoids a
+  // round-trip via get_graph_summary just to find a valid parent_id for
+  // create_branch).
+  return `BRANCH PATH (root → leaf, real card ids you can pass to create_branch):\n${chain}`;
+}
+
 /**
  * Full kickoff for a *fresh* session: priors must be embedded as text since
  * the session has no event history yet. Used on the first turn of a canvas
- * (or after the session is lost / re-minted).
+ * (or after the session is lost / re-minted). Includes BRANCH PATH so the
+ * agent has card ids available without calling get_graph_summary first.
  */
-function buildFullKickoff(history, input, emphasized, userContext) {
-  const parts = renderConstraintsAndContext(emphasized, userContext);
+function buildFullKickoff(history, input, emphasized, userContext, pathIds) {
+  const parts = [];
+  const branchPath = renderBranchPath(pathIds);
+  if (branchPath) parts.push(branchPath);
+  parts.push(...renderConstraintsAndContext(emphasized, userContext));
   const priors = (Array.isArray(history) ? history : []).filter(
     (m) =>
       m &&
@@ -239,20 +257,10 @@ function buildFullKickoff(history, input, emphasized, userContext) {
  * priority constraints / chip context that arrived this turn.
  */
 function buildSkinnyKickoff(pathIds, input, emphasized, userContext) {
-  const parts = renderConstraintsAndContext(emphasized, userContext);
-  const ids = (Array.isArray(pathIds) ? pathIds : []).filter(
-    (id) => typeof id === 'string' && id.trim(),
-  );
-  if (ids.length) {
-    // Card-id chain root → leaf. The agent matches these against prior
-    // user.message / agent.message events to ground itself in the right
-    // branch. get_card is available if it needs verbatim content from
-    // any specific card.
-    const chain = ids.map((id, i) =>
-      i === ids.length - 1 ? `${id} (current)` : id,
-    ).join(' → ');
-    parts.push(`BRANCH PATH (root → leaf):\n${chain}`);
-  }
+  const parts = [];
+  const branchPath = renderBranchPath(pathIds);
+  if (branchPath) parts.push(branchPath);
+  parts.push(...renderConstraintsAndContext(emphasized, userContext));
   parts.push(`USER: ${input.trim()}`);
   return parts.join('\n\n---\n\n');
 }
@@ -374,7 +382,7 @@ app.post('/api/generate', async (req, res) => {
   const buildKickoff = () =>
     incomingSessionId
       ? buildSkinnyKickoff(pathIds, input, emphasized, userContext)
-      : buildFullKickoff(history, input, emphasized, userContext);
+      : buildFullKickoff(history, input, emphasized, userContext, pathIds);
   let text = buildKickoff();
   const startedAt = Date.now();
   logEvent('generate.start', {
@@ -454,7 +462,7 @@ app.post('/api/generate', async (req, res) => {
       }
       const created = await anthropic.beta.sessions.create(sessionParams);
       sessionId = created.id;
-      text = buildFullKickoff(history, input, emphasized, userContext);
+      text = buildFullKickoff(history, input, emphasized, userContext, pathIds);
       res.write(
         `data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`,
       );

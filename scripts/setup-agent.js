@@ -144,7 +144,7 @@ const CUSTOM_TOOLS = [
         parent_id: {
           type: 'string',
           description:
-            'The card id (TurnId) the new branch should sprout from.',
+            'The card id of the existing turn to sprout the branch from. MUST be a real id from the graph, in the exact format "shape:abc123def" (lowercase prefix "shape:" then alphanumeric chars). Get valid ids from the BRANCH PATH section of your latest user message, or by calling get_graph_summary. NEVER invent placeholder values like "ROOT", "current", or numeric ids — the call will be rejected. If you don\'t have a concrete id available, call get_graph_summary first.',
         },
         prompt: {
           type: 'string',

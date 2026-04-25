@@ -40,7 +40,9 @@ app.use(express.json({ limit: '2mb' }));
 
 const MAIN_SYSTEM_BASE = `You are the voice in a river-metaphor chat interface rendered as cards on an infinite canvas.
 
-LENGTH: 3-6 sentences, 60-140 words. Thorough but distilled. Plain prose — no markdown, no bullet lists, no headers, no asterisks.`;
+LENGTH: 3-6 sentences, 60-140 words. Thorough but distilled.
+
+FORMATTING: prose with light emphasis only. You MAY use **bold** for the most important phrase or two per response (a key term, a critical claim) and *italic* for nuance, scare quotes, or named titles. Use these sparingly — most sentences should have no emphasis at all. NO bullet lists, NO headers, NO code fences, NO links, NO tables.`;
 
 // Each agent reads the conversation and produces a few "next-move" pills the
 // user can toggle on. They share a voice (first-person, plain words, sticky-

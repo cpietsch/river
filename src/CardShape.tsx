@@ -9,6 +9,7 @@ import {
 } from 'tldraw';
 import { useCardActions } from './CardActions';
 import type { ChipSpan } from './api';
+import { stripMarkdown } from './graph/markdown';
 
 // Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
 // synthesized click on touchend often never fires on the button — so onClick
@@ -555,26 +556,30 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
 }
 
 /**
- * Render prose with each `chipSpans` phrase wrapped at its FIRST verbatim
- * occurrence only (single-occurrence). Tapping a chip toggles just that
- * instance — later mentions of the same phrase stay plain text.
+ * Render prose with markdown emphasis and chip spans interleaved. The text
+ * passed in is the raw assistant output (may include `**bold**` / `*italic*`
+ * markers). chipSpans were extracted from the marker-stripped plain text.
  *
  * Algorithm:
- *  1. For each span (longest first so "MacBook Pro M-series" claims its
- *     range before "Pro" or "MacBook" can), find the first non-overlapping
- *     case-insensitive occurrence.
- *  2. Sort the resulting matches by start position.
- *  3. Walk text + matches alternately to render parts.
+ *  1. Strip markdown markers, recording bold/italic ranges in plain coords.
+ *  2. Find first non-overlapping occurrence of each chip span in the plain
+ *     text (longest first so "MacBook Pro M-series" claims its range
+ *     before "Pro" or "MacBook" can).
+ *  3. Walk plain-text positions, splitting at every range boundary, and
+ *     emit React nodes wrapping with <strong>/<em>/<BranchChip> as needed.
+ *     Chips and emphasis can nest in either direction.
  */
 function renderWithChipSpans(
-  text: string,
+  raw: string,
   spans: ChipSpan[],
   selected: Set<string>,
   onChipClick: (phrase: string) => void,
 ): React.ReactNode {
+  const { plain, bold, italic } = stripMarkdown(raw);
+
   type Match = { start: number; end: number; phrase: string };
   const matches: Match[] = [];
-  const lower = text.toLowerCase();
+  const lower = plain.toLowerCase();
   const sorted = [...spans].sort((a, b) => b.phrase.length - a.phrase.length);
   for (const span of sorted) {
     const target = span.phrase.toLowerCase();
@@ -584,35 +589,67 @@ function renderWithChipSpans(
       const idx = lower.indexOf(target, from);
       if (idx < 0) break;
       const end = idx + target.length;
-      // Skip occurrences that overlap a longer span we've already claimed.
       const overlaps = matches.some((m) => idx < m.end && end > m.start);
       if (overlaps) {
         from = end;
         continue;
       }
       matches.push({ start: idx, end, phrase: span.phrase });
-      break; // only the first non-overlapping occurrence
+      break;
     }
   }
-  matches.sort((a, b) => a.start - b.start);
+
+  // Build a sorted set of "split points" at every range start/end so we
+  // can walk plain text in segments and ask, for each segment, whether
+  // it's bold, italic, and/or a chip.
+  const points = new Set<number>([0, plain.length]);
+  for (const r of [...matches, ...bold, ...italic]) {
+    points.add(r.start);
+    points.add(r.end);
+  }
+  const sortedPts = [...points].sort((a, b) => a - b);
+
+  const inRange = (
+    pos: number,
+    ranges: { start: number; end: number }[],
+  ): boolean => ranges.some((r) => pos >= r.start && pos < r.end);
+
+  const findChipMatch = (start: number, end: number): Match | undefined =>
+    matches.find((m) => m.start === start && m.end === end);
 
   const parts: React.ReactNode[] = [];
-  let cursor = 0;
   let chipKey = 0;
-  for (const m of matches) {
-    if (m.start > cursor) parts.push(text.slice(cursor, m.start));
-    const visible = text.slice(m.start, m.end);
-    parts.push(
-      <BranchChip
-        key={`chip-${chipKey++}`}
-        term={visible}
-        on={selected.has(m.phrase)}
-        onClick={() => onChipClick(m.phrase)}
-      />,
-    );
-    cursor = m.end;
+  let mdKey = 0;
+  for (let i = 0; i < sortedPts.length - 1; i++) {
+    const a = sortedPts[i];
+    const b = sortedPts[i + 1];
+    if (a === b) continue;
+    const slice = plain.slice(a, b);
+    const isBold = inRange(a, bold);
+    const isItalic = inRange(a, italic);
+    const chip = findChipMatch(a, b);
+
+    let node: React.ReactNode;
+    if (chip) {
+      node = (
+        <BranchChip
+          key={`chip-${chipKey++}`}
+          term={slice}
+          on={selected.has(chip.phrase)}
+          onClick={() => onChipClick(chip.phrase)}
+        />
+      );
+    } else {
+      node = slice;
+    }
+    if (isItalic) {
+      node = <em key={`em-${mdKey++}`}>{node}</em>;
+    }
+    if (isBold) {
+      node = <strong key={`b-${mdKey++}`}>{node}</strong>;
+    }
+    parts.push(node);
   }
-  if (cursor < text.length) parts.push(text.slice(cursor));
   return parts;
 }
 
@@ -625,9 +662,11 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // Unselected chips are INVISIBLE (identical to surrounding text). Tapping
-  // one selects just that instance — blue pill style. Hover previews the
-  // selected styling at lower opacity for discoverability.
+  // Unselected chips are INVISIBLE — they take the same space as the
+  // underlying text, no padding, no margin, no font-weight change — so
+  // line wrapping behaves exactly as the prose flowed without chips.
+  // Selected chips paint a colored background behind the same characters
+  // (still no padding shift) so they don't reflow the page.
   return (
     <button
       type="button"
@@ -637,19 +676,22 @@ function BranchChip({
       title={on ? `Selected: ${term} (tap to deselect)` : `Select: ${term}`}
       style={{
         display: 'inline',
-        padding: on ? '1px 8px' : 0,
+        padding: 0,
         margin: 0,
         background: on ? '#2e6ecf' : 'transparent',
         border: 'none',
-        borderRadius: on ? 999 : 0,
+        borderRadius: on ? 3 : 0,
         color: on ? '#fff' : 'inherit',
         font: 'inherit',
         fontSize: 'inherit',
-        fontWeight: on ? 600 : 'inherit',
+        fontWeight: 'inherit',
         cursor: 'pointer',
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
         transition: 'background 120ms, color 120ms',
+        // Box-shadow rather than padding to give the colored span a tiny
+        // bit of visual breathing room without adding layout width.
+        boxShadow: on ? '0 0 0 2px #2e6ecf' : 'none',
       }}
     >
       {term}

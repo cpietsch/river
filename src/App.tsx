@@ -23,6 +23,7 @@ import {
 import { useConversation } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
 import { extractSpans } from './graph/extractSpans';
+import { stripMarkdown } from './graph/markdown';
 import type { TurnId } from './graph/types';
 
 const shapeUtils = [CardShapeUtil];
@@ -304,7 +305,7 @@ export function App() {
               const m = trail.match(/^[\s\S]*[.!?](?:\s|$)/);
               if (m) {
                 lastSentenceEnd += m[0].length;
-                const spans = extractSpans(buffer.slice(0, lastSentenceEnd));
+                const spans = extractSpans(stripMarkdown(buffer.slice(0, lastSentenceEnd)).plain);
                 if (spans.length > 0) {
                   useConversation
                     .getState()
@@ -369,7 +370,7 @@ export function App() {
         // selectable phrases (noun phrases, named entities, hyphenated
         // compounds, acronyms, numeric quantities) directly in the browser.
         // Synchronous — chips render instantly when the stream finishes.
-        const spans = extractSpans(buffer);
+        const spans = extractSpans(stripMarkdown(buffer).plain);
         if (spans.length > 0) {
           useConversation.getState().setChipSpans(assistantId, spans);
           if (precacheEnabledRef.current) {
@@ -599,7 +600,7 @@ export function App() {
           .getState()
           .setContent(assistantId, buffer, { streaming: false });
 
-        const spans = extractSpans(buffer);
+        const spans = extractSpans(stripMarkdown(buffer).plain);
         if (spans.length > 0) {
           useConversation.getState().setChipSpans(assistantId, spans);
           if (precacheEnabledRef.current) {
@@ -914,12 +915,12 @@ export function App() {
         .river-input-wrap ::-webkit-scrollbar { display: none; }
         .river-card:hover .river-card-actions { opacity: 1 !important; }
         .river-card-actions button:hover { background: rgba(0,0,0,0.06) !important; }
-        /* Chips are invisible by default; hover previews the selected
-           pill at low opacity for discoverability. Active selection
-           styling is inline. */
+        /* Chips are invisible by default; hover tints the background at
+           low opacity so the affordance is discoverable, but the chip's
+           box keeps its exact original width — no padding shift, no
+           margin, so the prose wraps as if the chip weren't there. */
         .river-chip:not(.on):hover {
-          background: rgba(46, 110, 207, 0.10) !important;
-          border-radius: 999px;
+          background: rgba(46, 110, 207, 0.12) !important;
         }
         .tl-html-container button,
         .tl-html-container textarea,

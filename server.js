@@ -300,6 +300,8 @@ function describeTool(name, input) {
       return 'flagging an important card';
     case 'create_card':
       return 'creating a card on the canvas';
+    case 'create_cards':
+      return 'creating cards on the canvas';
     case 'present_options':
       return 'presenting choices for you to pick from';
     case 'edit_card':
@@ -708,6 +710,73 @@ app.post('/api/generate', async (req, res) => {
               ok: true,
               card_id: newId,
               status: `card created and shown to user (id: ${newId})`,
+            });
+          }
+        } else if (event.name === 'create_cards') {
+          // Batched card creation. One tool round-trip materializes N
+          // cards; emits N SSE events back-to-back; ACKs the agent with
+          // the array of new ids in input order. Saves N-1 round-trips
+          // vs N sequential create_card calls (5-15s each).
+          const cardsIn = Array.isArray(event.input?.cards)
+            ? event.input.cards
+            : [];
+          const turns = graph?.turns ?? {};
+          if (cardsIn.length === 0) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'cards array is required and must be non-empty',
+            });
+          } else if (cardsIn.length > 20) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'too many cards in one batch (max 20)',
+            });
+          } else {
+            const ids = [];
+            const errors = [];
+            for (let i = 0; i < cardsIn.length; i++) {
+              const c = cardsIn[i];
+              const parentId = c?.parent_id;
+              const content = (c?.content ?? '').toString();
+              const role = c?.role === 'user' ? 'user' : 'assistant';
+              if (!parentId || !turns[parentId]) {
+                errors.push(`#${i}: parent_id ${parentId ?? '(missing)'} not in graph`);
+                ids.push(null);
+                continue;
+              }
+              if (!content.trim()) {
+                errors.push(`#${i}: content is required`);
+                ids.push(null);
+                continue;
+              }
+              const newId = makeShapeId();
+              ids.push(newId);
+              res.write(
+                `data: ${JSON.stringify({
+                  type: 'card_created',
+                  id: newId,
+                  parentId,
+                  role,
+                  content: content.slice(0, 8000),
+                })}\n\n`,
+              );
+              if (graph && graph.turns) {
+                graph.turns[newId] = {
+                  id: newId,
+                  role,
+                  parentId,
+                  content,
+                  emphasis: 1,
+                };
+              }
+            }
+            const created = ids.filter(Boolean);
+            result = JSON.stringify({
+              ok: errors.length === 0,
+              card_ids: ids,
+              created: created.length,
+              errors: errors.length > 0 ? errors : undefined,
+              status: `${created.length} of ${cardsIn.length} cards created`,
             });
           }
         } else if (event.name === 'flag_card') {

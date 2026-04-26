@@ -1882,6 +1882,7 @@ function BranchPlusButtonOverlay({
         width: 22,
         height: 22,
         padding: 0,
+        boxSizing: 'border-box',
         background: '#fff',
         border: `1px solid ${hover ? '#666' : '#bbb'}`,
         borderRadius: 999,

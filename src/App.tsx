@@ -453,6 +453,23 @@ export function App() {
                   .getState()
                   .setCardOptions(o.cardId as TurnId, o.options);
               },
+              onCardEdited: (e) => {
+                logEvent('client.card_edited', {
+                  cardId: e.cardId,
+                  contentLen: e.content.length,
+                });
+                // Replace content; chip spans on the prior text are now
+                // stale, so re-derive against the new prose.
+                useConversation
+                  .getState()
+                  .setContent(e.cardId as TurnId, e.content, {
+                    streaming: false,
+                  });
+                const fresh = extractSpans(stripMarkdown(e.content).plain);
+                useConversation
+                  .getState()
+                  .setChipSpans(e.cardId as TurnId, fresh);
+              },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {
                   proposalId: p.proposalId,

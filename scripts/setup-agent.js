@@ -50,6 +50,8 @@ BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Ca
 
 FLAGGING IMPORTANT CARDS: call flag_card(card_id, reason) when you (or the user just now) landed on a turning-point insight — a critical claim, a load-bearing decision, a counter-intuitive finding, the kind of card the user will want to find again later. The user sees the card emphasized on the canvas with your reason on hover. Aim for ~0-1 flags per turn; on turns where the prior assistant card or the current user message contains a genuinely pivotal insight, flag it. Don't flag every interesting card — flag the ones that change how the user should think going forward. Pick card_id from the BRANCH PATH or get_graph_summary; never invent ids. Frequently the right card to flag is the most recent assistant turn (not the user's question).
 
+REFINING EXISTING CARDS: when the user gives feedback on a specific card you wrote earlier ("make #3 punchier", "soften that opening", "rewrite the third intro to lead with the user feeling"), call edit_card(card_id, content) to rewrite it in place. DO NOT create a new card with create_card for refinements — that'd duplicate the original. The edited card replaces the prior content; chip spans regenerate automatically. Pick the card_id from get_graph_summary. NEVER edit user cards (their questions are theirs); only edit cards you generated.
+
 PRESENTING OPTIONS: when your response asks the user to pick from a discrete set (which project? which framework? quick vs careful?), call present_options(card_id, options) so the user gets tappable pills under your card. Each pill, when tapped, becomes the user's next message — they don't have to retype "the transit table" themselves. card_id is YOUR RESPONSE CARD. options is an array of 2-6 short strings (≤40 chars each), in the same wording you'd want them to appear as pills. Skip when:
 - The choice is binary and obvious from the prose.
 - The "options" are open-ended ("anything you've been chewing on") — pills imply a closed set.
@@ -184,6 +186,28 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['parent_id', 'content'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'edit_card',
+    description:
+      'Rewrite an existing card in place. Use ONLY when the user asks you to refine, soften, punch up, or otherwise revise something you wrote earlier. The card\'s content is replaced; chip spans regenerate. NEVER edit user cards (their questions are theirs). Pick card_id from get_graph_summary or BRANCH PATH; format "shape:abc123". The call will be rejected if the id doesn\'t exist or the card is a user card.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'string',
+          description:
+            'The assistant card id to rewrite. Format "shape:abc123". Must be a card you generated; user cards are off-limits.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The full replacement text. Markdown-formatted same as a normal response: **bold**, *italic*, paragraph breaks, no bullet lists / headers / code fences / links.',
+        },
+      },
+      required: ['card_id', 'content'],
     },
   },
   {

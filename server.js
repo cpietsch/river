@@ -295,6 +295,8 @@ function describeTool(name, input) {
       return 'creating a card on the canvas';
     case 'present_options':
       return 'presenting choices for you to pick from';
+    case 'edit_card':
+      return 'refining an earlier card';
     default:
       return `using ${name}`;
   }
@@ -531,7 +533,46 @@ app.post('/api/generate', async (req, res) => {
           input: event.input ?? null,
         });
         let result;
-        if (event.name === 'present_options') {
+        if (event.name === 'edit_card') {
+          // Rewrite an existing card in place. Validate the id exists in
+          // the graph and that it's an assistant card (user cards are
+          // off-limits — their questions belong to the user). Forward
+          // SSE so the client applies setContent + re-derives chip spans.
+          const cardId = event.input?.card_id;
+          const newContent = (event.input?.content ?? '').toString();
+          const turns = graph?.turns ?? {};
+          const target = cardId ? turns[cardId] : null;
+          if (!cardId || !target) {
+            result = JSON.stringify({
+              ok: false,
+              error: `card_id ${cardId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (target.role !== 'assistant') {
+            result = JSON.stringify({
+              ok: false,
+              error: `card ${cardId} is a user card; only assistant cards can be edited`,
+            });
+          } else if (!newContent.trim()) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'content is required',
+            });
+          } else {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'card_edited',
+                cardId,
+                content: newContent.slice(0, 8000),
+              })}\n\n`,
+            );
+            // Update in-flight snapshot so subsequent calls see new text.
+            target.content = newContent;
+            result = JSON.stringify({
+              ok: true,
+              status: 'card rewritten in place',
+            });
+          }
+        } else if (event.name === 'present_options') {
           // Attach a list of pick-from pills to a card. Forwards an SSE
           // event the client applies to meta.options; ACKs the agent
           // immediately so it never blocks.

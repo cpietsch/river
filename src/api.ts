@@ -100,6 +100,14 @@ export type CardOptions = {
   options: string[];
 };
 
+// In-place card rewrite forwarded from the server when the agent calls
+// edit_card. The client replaces the card's content and re-derives chip
+// spans against the new text.
+export type CardEdit = {
+  cardId: string;
+  content: string;
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
@@ -125,6 +133,7 @@ export async function streamGenerate(
     onCardFlag?: (f: CardFlag) => void;
     onCardCreated?: (c: CardCreation) => void;
     onCardOptions?: (o: CardOptions) => void;
+    onCardEdited?: (e: CardEdit) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -141,6 +150,7 @@ export async function streamGenerate(
     onCardFlag,
     onCardCreated,
     onCardOptions,
+    onCardEdited,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -227,6 +237,15 @@ export async function streamGenerate(
             options: parsed.options.filter(
               (o: unknown): o is string => typeof o === 'string',
             ),
+          });
+        } else if (
+          parsed.type === 'card_edited' &&
+          typeof parsed.cardId === 'string' &&
+          typeof parsed.content === 'string'
+        ) {
+          onCardEdited?.({
+            cardId: parsed.cardId,
+            content: parsed.content,
           });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));

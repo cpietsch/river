@@ -17,6 +17,7 @@ import {
   deleteSession,
   deleteSubtreeRemote,
   fetchAgentPredictions,
+  fetchChipQuestion,
   fetchInfo,
   fetchLabels,
   fetchProjects,
@@ -790,7 +791,40 @@ export function App() {
             parts.push(p.full.trim());
           }
         }
-        for (const c of gatherSelectedChips(activeId)) parts.push(c.full);
+        // Chip phrases alone aren't sentences — round-trip them through
+        // Haiku so the user message reads like a coherent follow-up
+        // question grounded in the source passage (the same shape the
+        // prediction pills already arrive in). Falls back to a simple
+        // template if the model is slow/unreachable.
+        const chipSel = gatherSelectedChips(activeId);
+        if (chipSel.length > 0) {
+          const phrases = chipSel.map((c) => c.term);
+          const sourceIds = Array.from(
+            new Set(chipSel.map((c) => c.cardId)),
+          );
+          const store = useConversation.getState();
+          const sourceContent = sourceIds
+            .map((id) => store.getTurn(id)?.content ?? '')
+            .filter(Boolean)
+            .join('\n\n');
+          const formulated = await fetchChipQuestion({
+            phrases,
+            content: sourceContent,
+          });
+          if (formulated) {
+            parts.push(formulated);
+          } else {
+            // Fallback if the formulator failed: still produce a real
+            // sentence rather than a bag of nouns.
+            let joined: string;
+            if (phrases.length === 1) joined = phrases[0];
+            else if (phrases.length === 2)
+              joined = `${phrases[0]} and ${phrases[1]}`;
+            else
+              joined = `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
+            parts.push(`Tell me more about ${joined}.`);
+          }
+        }
         if (parts.length > 0) {
           text = parts.filter((s) => s.length > 0).join(' ');
           usedSelectionsAsMessage = true;

@@ -41,6 +41,28 @@ export async function fetchAgentPredictions(
   }
 }
 
+// Turn a set of selected chip phrases into a single short follow-up question,
+// formulated by Haiku in the context of the source passage. Used at submit
+// time when the user sends with chip selections + no typed text — without
+// this the message would just be the bag of phrases.
+export async function fetchChipQuestion(payload: {
+  phrases: string[];
+  content: string;
+}): Promise<string> {
+  try {
+    const res = await fetch('/api/chip-question', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return '';
+    const data = (await res.json()) as { question?: string };
+    return typeof data.question === 'string' ? data.question : '';
+  } catch {
+    return '';
+  }
+}
+
 // A selectable span inside an assistant card's prose. The `phrase` appears
 // verbatim in the text; `question` is the prompt the chip rides forward as
 // when selected. Today both are computed locally by extractSpans (compromise

@@ -1952,6 +1952,68 @@ app.post('/api/labels', async (req, res) => {
   }
 });
 
+/**
+ * Turn a set of selected inline-chip phrases into a single short follow-up
+ * question, formulated by Haiku in the context of their source passage.
+ * Called from the client at submit time when the user sends with chip
+ * selections and no typed text. Mirrors how prediction pills become the
+ * user message — a coherent sentence, not a bag of nouns.
+ */
+const CHIP_QUESTION_SYSTEM = `You convert highlighted phrases from a passage into ONE short follow-up question (under 15 words) that the user is asking about those phrases in the context of the passage.
+
+Rules:
+- Output ONLY the question itself. No quotes, no preamble, no commentary.
+- Keep it natural and conversational — what a curious reader would ask next.
+- Tie the phrases together if they're related; otherwise focus on the most specific phrase.
+- Don't repeat the passage; ask about it.`;
+
+app.post('/api/chip-question', async (req, res) => {
+  const { phrases, content } = req.body ?? {};
+  const list = Array.isArray(phrases)
+    ? phrases.map((p) => String(p ?? '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const ctx = typeof content === 'string' ? content.trim().slice(0, 1500) : '';
+  if (list.length === 0 || !ctx) {
+    res.json({ question: '' });
+    return;
+  }
+  const startedAt = Date.now();
+  try {
+    const response = await anthropic.messages.create({
+      model: MIST_MODEL,
+      max_tokens: 60,
+      system: CHIP_QUESTION_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: `Passage:\n${ctx}\n\nHighlighted phrases: ${list.join(', ')}\n\nWrite ONE short follow-up question.`,
+        },
+      ],
+    });
+    const raw = response.content
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('')
+      .trim();
+    // Strip surrounding quotes if Haiku added them despite the rule.
+    const question = raw
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 200);
+    logEvent('chip_question.complete', {
+      durationMs: Date.now() - startedAt,
+      phraseCount: list.length,
+      questionLen: question.length,
+    });
+    res.json({ question });
+  } catch (err) {
+    logEvent('chip_question.error', {
+      durationMs: Date.now() - startedAt,
+      message: String(err?.message ?? err),
+    });
+    res.json({ question: '' });
+  }
+});
+
 // Client-side event logging. The browser hits this with `client.*` events
 // (chip toggles, sends, branches, deletes...) so the same JSONL file
 // captures the full session trace alongside the server-side generate/agents

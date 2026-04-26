@@ -1,8 +1,5 @@
 # river
 
-> The product is named **river**. Internal storage identifiers (`river-2.db`, `river-2-active-v2` localStorage key, `river-2-graph` tldraw IndexedDB key, `river-2-env`, `river-2-memory`) are intentionally still suffixed `-2` — renaming them would orphan existing user state, the agent's memory store, and the SQLite database. Treat the storage keys as a frozen schema id, not the product name.
-
-
 Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant turn is a card, branches are arrows, and the brain is a Managed Agent that lives across the whole canvas (one persistent session per project, one provisioned agent per project). The agent is positioned as a **cartographer** of the canvas — it answers turns AND tends the workspace: creating, flagging, linking, and editing cards over time. Multiple parallel root streams can coexist on a single canvas. Two-process app — Vite (web) + Express (single source of truth + Anthropic proxy).
 
 ## Run
@@ -20,7 +17,7 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 The Express server (`server.js` + a SQLite-backed `db.js`) is the canonical store for projects, turns, links, and branch proposals. The client reads from `/api/projects/:id/state` on mount / project switch, then receives live updates via WebSocket (`/ws/:projectId`). Multiple tabs / browsers stay in sync this way.
 
 - `src/graph/store.ts` — Zustand store (`useConversation`). Holds the active canvas's data in memory:
-  - `activeProjectId: string | null` — the only field persisted to localStorage (key `river-2-active-v2`)
+  - `activeProjectId: string | null` — the only field persisted to localStorage (key `river-active`)
   - `projects: Project[]` — list metadata
   - `turns: Record<TurnId, Turn>`, `links: Link[]`, `proposals: BranchProposal[]` — populated from the server on switch
   - `projectSessionId: string | null` — active canvas's Managed Agent session id
@@ -69,7 +66,7 @@ The Express server (`server.js` + a SQLite-backed `db.js`) is the canonical stor
 - The kickoff also includes `BRANCH PATH` (real card ids the agent can pass to mutating customs) and `YOUR RESPONSE CARD: shape:xxx` (the assistant card the prose is streaming into; the natural parent for `create_card` / `create_cards`).
 - If the client's session id is stale (deleted out-of-band), the server catches the send error, mints a fresh session, swaps to the full kickoff, and retries once. No pre-flight `sessions.retrieve()` round-trip.
 
-Sessions are NOT deleted on completion; the canvas's event log + container state evolve over the project's lifetime. The memory store stays attached, `/mnt/memory/river-2-memory/` survives across sessions and across canvases. The `↻` reset button on the active project drops the session (cards stay; agent's intra-session memory + container reset; next turn mints a fresh session).
+Sessions are NOT deleted on completion; the canvas's event log + container state evolve over the project's lifetime. The memory store stays attached, `/mnt/memory/river-memory/` survives across sessions and across canvases. The `↻` reset button on the active project drops the session (cards stay; agent's intra-session memory + container reset; next turn mints a fresh session).
 
 **Multi-project: projects menu.** The toolbar's first button (the only toolbar button now — map and memory icons were removed) toggles a `ProjectsMenu` dropdown showing the active canvas's auto-derived name, `+ new canvas` at top, the active row with a `↻` reset-session button, and one row per archived project with click-to-resume, double-click-to-rename, and an inline ✕ that confirms then calls `deleteSession(sessionId)` server-side. `repaintCanvas()` wipes tldraw shapes after a swap so the syncer rebuilds from the new turn set.
 
@@ -121,7 +118,7 @@ Sessions are NOT deleted on completion; the canvas's event log + container state
 
 **Camera animation override.** `editor.user.updateUserPreferences({ animationSpeed: 1 })` overrides OS reduce-motion so programmatic camera moves stay smooth.
 
-**Persistence keys.** zustand: `river-2-active-v2` (localStorage) — only `activeProjectId`. Server SQLite is canonical for everything else (projects, turns, links, proposals, sessions). tldraw: `persistenceKey="river-2-graph"` (IndexedDB, shape positions). Bump localStorage key when the persisted shape changes.
+**Persistence keys.** zustand: `river-active` (localStorage) — only `activeProjectId`. Server SQLite is canonical for everything else (projects, turns, links, proposals, sessions). tldraw: `persistenceKey="river-graph"` (IndexedDB, shape positions). Bump localStorage key when the persisted shape changes.
 
 **JSONL session logs.** `server.js` appends every server-side and client-side event to `./logs/YYYY-MM-DD.jsonl` (one line per event: `{ts, type, ...data}`). Server emits `generate.{start,session_created,session_lost,tool_use,custom_tool_use,end,error}`, `agents.{complete,error}`, `labels.{start,complete,error,parse_error}`, `memory.{complete,error,parse_error}`, `wake.{start,tool_use,custom_tool_use,end,error}`, `agent.{provisioned,provision_failed}`, `session.{deleted,delete_failed}`. Client posts via `POST /api/log`: `client.{chip_toggle, prediction_toggle, emphasis_toggle, branch, new_stream, delete, start_new, send, switch_project, delete_project, reset_session, branch_proposal_received, proposal_accept, proposal_dismiss, card_flagged, card_created, card_edited, card_linked, card_options, option_picked, wake_start, wake_end, ws_subscribed, ws_error}`. Type prefix `client.` is enforced server-side. `logs/` is gitignored.
 

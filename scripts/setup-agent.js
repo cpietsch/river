@@ -6,9 +6,9 @@
 //   npm run setup-agent
 //
 // What it does (idempotent):
-//   1. Reuses the env at ENV_ID if present, otherwise creates "river-2-env".
+//   1. Reuses the env at ENV_ID if present, otherwise creates "river-env".
 //   2. Reuses the memory store at MEMORY_STORE_ID, otherwise creates
-//      "river-2-memory".
+//      "river-memory".
 //   3. Loads scripts/agent.yml, applies it to the agent at AGENT_ID
 //      (creates one if missing). Each apply bumps the agent to a new
 //      version; sessions reference latest by default.
@@ -26,8 +26,8 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const SCRIPT_DIR = path.dirname(url.fileURLToPath(import.meta.url));
 const AGENT_YAML = path.join(SCRIPT_DIR, 'agent.yml');
-const ENV_NAME = 'river-2-env';
-const MEMORY_STORE_NAME = 'river-2-memory';
+const ENV_NAME = 'river-env';
+const MEMORY_STORE_NAME = 'river-memory';
 
 const client = new Anthropic();
 

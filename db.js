@@ -1,19 +1,17 @@
-// Server-side persistent canvas state. SQLite single-file at ./data/river-2.db.
+// Server-side persistent canvas state. SQLite single-file at ./data/river.db.
 //
-// This is the source of truth for: projects, their turns, links, and
-// pending proposals. The active session id (Anthropic Managed Agent)
-// lives on the project row alongside the canvas.
-//
-// Phase 0 transition: the client also still keeps its zustand+localStorage
-// store (cache + offline). On client mount it migrates existing state up
-// once via POST /api/migrate, then reads canonical state from the server.
+// Source of truth for: projects, their turns, links, and pending
+// proposals. The active session id (Anthropic Managed Agent) lives on
+// the project row alongside the canvas. The client mirrors active-canvas
+// state into a zustand store for fast local reads + UI reactivity, and
+// hydrates from the server on mount + per-mutation WebSocket broadcasts.
 
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
-const DB_PATH = path.join(DATA_DIR, 'river-2.db');
+const DB_PATH = path.join(DATA_DIR, 'river.db');
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -77,18 +75,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_proposals_project ON proposals(project_id);
 `);
 
-// Migration: add wake_intent column to existing databases that pre-date
-// the per-project keeper direction. SQLite doesn't support IF NOT EXISTS
-// on ALTER TABLE ADD COLUMN, so we probe pragma_table_info first.
-{
-  const cols = db
-    .prepare(`SELECT name FROM pragma_table_info('projects')`)
-    .all()
-    .map((r) => r.name);
-  if (!cols.includes('wake_intent')) {
-    db.exec(`ALTER TABLE projects ADD COLUMN wake_intent TEXT NOT NULL DEFAULT ''`);
-  }
-}
 
 // ── Project queries ──────────────────────────────────────────────────────
 

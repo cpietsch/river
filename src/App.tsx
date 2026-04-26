@@ -1144,13 +1144,32 @@ export function App() {
         });
       }
       // Re-seat active on the most recent empty user turn (the input
-      // slot) if present, else the most recent turn.
+      // slot) if present, else the most recent turn. If the project is
+      // empty (fresh canvas just provisioned), spawn a starter user turn
+      // so the input is ready to type into instead of leaving the user
+      // staring at a blank canvas with no affordance.
       const turns = Object.values(useConversation.getState().turns);
-      const lastEmpty = [...turns]
-        .reverse()
-        .find((t) => t.role === 'user' && t.content.trim() === '');
-      const fallback = turns[turns.length - 1];
-      const targetId = lastEmpty?.id ?? fallback?.id ?? null;
+      let targetId: TurnId | null = null;
+      if (turns.length === 0) {
+        targetId = useConversation
+          .getState()
+          .createTurn({ role: 'user', parentId: null });
+        void upsertTurnRemote(projectId, {
+          id: targetId,
+          role: 'user',
+          content: '',
+          parentId: null,
+          emphasis: 1,
+          streaming: false,
+          meta: {},
+        });
+      } else {
+        const lastEmpty = [...turns]
+          .reverse()
+          .find((t) => t.role === 'user' && t.content.trim() === '');
+        const fallback = turns[turns.length - 1];
+        targetId = lastEmpty?.id ?? fallback?.id ?? null;
+      }
       setActiveId(targetId);
       setInput('');
       repaintCanvas();

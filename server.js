@@ -38,7 +38,7 @@ const MIST_MODEL = process.env.MIST_MODEL ?? 'claude-haiku-4-5-20251001';
 const AGENT_ID = process.env.AGENT_ID;
 const ENV_ID = process.env.ENV_ID;
 // Workspace-scoped memory the agent reads/writes across sessions. Mounted
-// into the container at /mnt/memory/river-2-memory/ — the agent uses the
+// into the container at /mnt/memory/river-memory/ — the agent uses the
 // regular file tools (read/write/edit/glob) to interact.
 const MEMORY_STORE_ID = process.env.MEMORY_STORE_ID;
 

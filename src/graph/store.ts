@@ -410,11 +410,9 @@ export const useConversation = create<ConversationStore>()(
       },
     }),
     {
-      // Bumped from 'river-2-graph' to invalidate any old localStorage
-      // shape from before the server-as-source-of-truth refactor. Now we
-      // persist ONLY which project this tab is looking at; everything
+      // Persist ONLY which project this tab is looking at; everything
       // else comes from the server on mount.
-      name: 'river-2-active-v2',
+      name: 'river-active',
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ activeProjectId: state.activeProjectId }),
     },

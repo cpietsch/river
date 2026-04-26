@@ -245,6 +245,10 @@ function createParentArrow(
         snap: 'none',
       },
     });
+    // Send the arrow to the back so cards (and the CSS-positioned `+`
+    // button inside each card's HTMLContainer) render on top of it.
+    // Without this, the arrow's render layer covers the + glyph.
+    editor.sendToBack([arrowId]);
   } catch (err) {
     console.warn('createParentArrow failed', err);
   }
@@ -304,6 +308,7 @@ function createLinkArrow(
         snap: 'none',
       },
     });
+    editor.sendToBack([arrowId]);
   } catch (err) {
     console.warn('createLinkArrow failed', err);
   }

@@ -468,13 +468,35 @@ export function App() {
       }
     };
     ws.onerror = () => {
-      logEvent('client.ws_error', { projectId });
+      // The CONNECTING-then-cleanup path (React StrictMode double-mount in
+      // dev) fires this with no real underlying error. Only log when the
+      // socket was actually open — a real error mid-session.
+      if (ws.readyState === WebSocket.OPEN) {
+        logEvent('client.ws_error', { projectId });
+      }
     };
     return () => {
-      try {
-        ws.close();
-      } catch (_) {
-        // ignore
+      // If the handshake hasn't completed yet, queue the close for after
+      // open so we don't trip the browser's "closed before connection
+      // established" warning. Common in dev under React StrictMode.
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.addEventListener(
+          'open',
+          () => {
+            try {
+              ws.close();
+            } catch (_) {
+              // ignore
+            }
+          },
+          { once: true },
+        );
+      } else if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close();
+        } catch (_) {
+          // ignore
+        }
       }
     };
   }, [activeProjectIdSel]);

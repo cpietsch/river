@@ -11,7 +11,7 @@ If you generate one long take, paste **the full script at the bottom**. If you w
 **On screen:** title card or a quick blur of a long ChatGPT-style transcript.
 
 ```
-Most chat with a model lives in a single thread. You scroll. You lose the thread. The model forgets. Every fork is destructive. River two puts the conversation on a canvas, and the agent has hands inside it.
+Most chat with a model lives in a single thread. You scroll. You lose the thread. The model forgets. Every fork is destructive. river puts the conversation on a canvas, and the agent has hands inside it.
 ```
 
 ---
@@ -26,12 +26,12 @@ Here's how it feels. You type a question. The agent's reply streams onto its own
 
 ---
 
-## Segment 3 — Agent as steward · 1:00–1:50
+## Segment 3 — Agent as cartographer · 1:00–1:50
 
 **On screen:** ask "give me four framings of this problem." Four cards materialize. Show the FLAGGED badge + hover reason on the most pivotal one. Ask "punch up the third card" — show it edit in place, not as a new card. Show a lateral dashed link the agent drew between two cards in different branches.
 
 ```
-What makes this different is the agent's role. It isn't just a respondent. It's framed as a steward of the workspace. Every turn is also a chance to maintain the canvas. Watch this — when I ask for four framings of a problem, I don't get four paragraphs in one card. I get four cards, each its own artifact. The agent flags the most pivotal one with a red badge and a one-line reason on hover. When I ask it to refine the third card, it edits in place. And it draws lateral dashed links between cards in different branches that touch the same idea. The structure of the thinking, made visible.
+What makes this different is the agent's role. It isn't just a respondent. It's framed as a cartographer of the workspace. Every turn is also a chance to maintain the canvas. Watch this — when I ask for four framings of a problem, I don't get four paragraphs in one card. I get four cards, each its own artifact. The agent flags the most pivotal one with a red badge and a one-line reason on hover. When I ask it to refine the third card, it edits in place. And it draws lateral dashed links between cards in different branches that touch the same idea. The structure of the thinking, made visible.
 ```
 
 ---
@@ -51,7 +51,7 @@ Everything I just did sits on one canvas. I can right-click empty space and star
 **On screen:** open a card the agent flagged or a link it drew during a pre-recorded autonomous wake. Briefly show the `/mnt/memory/` contents (a few preference notes the agent has written across canvases) or a memory note inline.
 
 ```
-And it remembers. Each canvas has its own persistent Managed Agent session — alive across reloads, days, multiple devices. There's a writable memory store the agent uses across all your canvases — preferences, recurring topics, durable conclusions. With autonomous wake turned on, the agent runs without me present, doing quiet stewardship passes between sessions. I come back, and the canvas has been tidied while I was away.
+And it remembers. Each canvas has its own persistent Managed Agent session — alive across reloads, days, multiple devices. There's a writable memory store the agent uses across all your canvases — preferences, recurring topics, durable conclusions. With autonomous wake turned on, the agent runs without me present, doing quiet cartographer passes between sessions. I come back, and the canvas has been tidied while I was away.
 ```
 
 ---
@@ -71,15 +71,15 @@ A maintained thinking environment, not a pile of historical turns. Built on Opus
 Paste the whole block below into ElevenLabs as a single take. Keep paragraph breaks intact — they render as natural pauses between segments.
 
 ```
-Most chat with a model lives in a single thread. You scroll. You lose the thread. The model forgets. Every fork is destructive. River two puts the conversation on a canvas, and the agent has hands inside it.
+Most chat with a model lives in a single thread. You scroll. You lose the thread. The model forgets. Every fork is destructive. river puts the conversation on a canvas, and the agent has hands inside it.
 
 Here's how it feels. You type a question. The agent's reply streams onto its own card. While it's thinking, the card shows what it's actually doing — searching the web, reading a file, creating a card. When the reply lands, you can tap any phrase to mark it as context. You can hit the small plus below any card to branch. Or right-click empty canvas to start a brand new stream, parallel to whatever's already there.
 
-What makes this different is the agent's role. It isn't just a respondent. It's framed as a steward of the workspace. Every turn is also a chance to maintain the canvas. Watch this — when I ask for four framings of a problem, I don't get four paragraphs in one card. I get four cards, each its own artifact. The agent flags the most pivotal one with a red badge and a one-line reason on hover. When I ask it to refine the third card, it edits in place. And it draws lateral dashed links between cards in different branches that touch the same idea. The structure of the thinking, made visible.
+What makes this different is the agent's role. It isn't just a respondent. It's framed as a cartographer of the workspace. Every turn is also a chance to maintain the canvas. Watch this — when I ask for four framings of a problem, I don't get four paragraphs in one card. I get four cards, each its own artifact. The agent flags the most pivotal one with a red badge and a one-line reason on hover. When I ask it to refine the third card, it edits in place. And it draws lateral dashed links between cards in different branches that touch the same idea. The structure of the thinking, made visible.
 
 Everything I just did sits on one canvas. I can right-click empty space and start a second parallel investigation right next to it. Two roots, two subtrees, both alive at the same time. The canvas can hold any number of independent streams — different threads, same workspace.
 
-And it remembers. Each canvas has its own persistent Managed Agent session — alive across reloads, days, multiple devices. There's a writable memory store the agent uses across all your canvases — preferences, recurring topics, durable conclusions. With autonomous wake turned on, the agent runs without me present, doing quiet stewardship passes between sessions. I come back, and the canvas has been tidied while I was away.
+And it remembers. Each canvas has its own persistent Managed Agent session — alive across reloads, days, multiple devices. There's a writable memory store the agent uses across all your canvases — preferences, recurring topics, durable conclusions. With autonomous wake turned on, the agent runs without me present, doing quiet cartographer passes between sessions. I come back, and the canvas has been tidied while I was away.
 
 A maintained thinking environment, not a pile of historical turns. Built on Opus four point seven and Anthropic's Managed Agents.
 ```
@@ -98,7 +98,7 @@ If you generate per-segment and stitch in a video editor, leave a 200–400ms si
 
 ## A few words flagged for pronunciation
 
-- **river two** — written that way (not "river-2" or "river-two") so TTS reads it as "river two", not "river dash two".
+- **river** — one-syllable name; TTS handles it cleanly with no special spelling.
 - **Opus four point seven** — written that way so TTS doesn't say "four hundred and seventy".
 - **Anthropic** — most clones handle this fine; if yours stumbles, try "An-thropic" with the hyphen.
 

@@ -1,4 +1,4 @@
-# river-2
+# river
 
 A chat that lives on a canvas, with an agent that lives in the canvas with you.
 
@@ -6,11 +6,11 @@ A chat that lives on a canvas, with an agent that lives in the canvas with you.
 
 Linear chat is a tape. You scroll, you lose the thread, the model forgets, tangents become dead ends. Most of what makes a real conversation valuable — *we tried that, we backed out, we found something interesting over here, this was the turning point* — has nowhere to go.
 
-river-2 puts the conversation on an infinite tldraw canvas. Every user message and every model response is a card. You can branch from any card. You can run several parallel streams side by side. You can flag, link, and edit. The graph of your thinking becomes a thing you can see, navigate, and build on.
+river puts the conversation on an infinite tldraw canvas. Every user message and every model response is a card. You can branch from any card. You can run several parallel streams side by side. You can flag, link, and edit. The graph of your thinking becomes a thing you can see, navigate, and build on.
 
-The agent isn't behind a streaming text box. It's a **steward of the canvas** — its job is to keep the workspace legible and useful as it grows, not just to answer the latest prompt. It can create cards, rewrite them in place, mark turning points, draw lateral connections between cards in different branches, suggest unexplored directions, and present pick-from pills when it asks you to choose. When the conversation calls for five separate intros, you get five cards. When you ask it to soften card #3, it edits #3 in place. When you're scattered, it can spot two threads in different branches that touch the same idea and draw a dashed line between them. The bar it asks itself before any stewardship move: *would the user, looking at the canvas a week from now, be glad I took this action?*
+The agent isn't behind a streaming text box. It's a **cartographer of the canvas** — its job is to keep the workspace legible and useful as it grows, not just to answer the latest prompt. It can create cards, rewrite them in place, mark turning points, draw lateral connections between cards in different branches, suggest unexplored directions, and present pick-from pills when it asks you to choose. When the conversation calls for five separate intros, you get five cards. When you ask it to soften card #3, it edits #3 in place. When you're scattered, it can spot two threads in different branches that touch the same idea and draw a dashed line between them. The bar it asks itself before any cartographer move: *would the user, looking at the canvas a week from now, be glad I took this action?*
 
-It also has memory. Each canvas is a *project* — one persistent Anthropic Managed Agent session, alive across reloads, days, multiple browsers. The agent has a writable memory store at `/mnt/memory/` it uses across all your canvases (preferences, recurring topics, durable conclusions). It comes back knowing you. Occasionally, with auto-wake on, it does a quiet stewardship pass between your sessions.
+It also has memory. Each canvas is a *project* — one persistent Anthropic Managed Agent session, alive across reloads, days, multiple browsers. The agent has a writable memory store at `/mnt/memory/` it uses across all your canvases (preferences, recurring topics, durable conclusions). It comes back knowing you. Occasionally, with auto-wake on, it does a quiet cartographer pass between your sessions.
 
 ## How it works (walkthrough)
 
@@ -48,11 +48,11 @@ Working today (smoke-tested):
 - Persistent per-project Managed Agent sessions on Opus 4.7
 - Eight agent custom tools that operate on the canvas: `create_card`, `create_cards`, `edit_card`, `flag_card`, `create_branch`, `link_cards`, `present_options`, plus the read tools `get_graph_summary` and `get_card`
 - Full agent toolset (web search, file ops, bash) — used sparingly per a tightened system prompt
-- Steward-framed system prompt: every turn is also a chance to flag, link, edit, or surface an unexplored angle
+- Cartographer-framed system prompt: every turn is also a chance to flag, link, edit, or surface an unexplored angle
 - Branching, lateral links, multi-root parallel streams on a single canvas, projects archive/resume/delete
 - Auto-discard of orphaned empty branch inputs when you start a new branch or stream
 - Live tool-call activity surfaced inline on the streaming card
-- Optional autonomous wake (cron loop, off by default) — quiet stewardship passes between sessions
+- Optional autonomous wake (cron loop, off by default) — quiet cartographer passes between sessions
 - JSONL session telemetry (`./logs/YYYY-MM-DD.jsonl`) covering server tool use, custom tool calls, token usage, every client-side action
 - Persisted UI state (turns, links, branch proposals) survives reloads via the server (single source of truth)
 - Skinny per-turn kickoff (branch path of card ids only) so the persistent session doesn't blow context

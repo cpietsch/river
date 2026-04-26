@@ -91,7 +91,7 @@ async function ensureMemoryStore() {
   const store = await client.beta.memoryStores.create({
     name: MEMORY_STORE_NAME,
     description:
-      'Long-term memory for river-2: user preferences (tone, formatting, ' +
+      'Long-term memory for river: user preferences (tone, formatting, ' +
       'expertise), recurring topics the user explores, durable conclusions ' +
       'worth carrying across sessions. Read at the start of each session; ' +
       'write when something genuinely worth persisting comes up. Skip ' +
@@ -138,7 +138,7 @@ async function main() {
     typeof config.model === 'string'
       ? config.model
       : `${config.model?.id ?? '?'}${config.model?.speed ? ' · ' + config.model.speed : ''}`;
-  console.log(`Setting up Managed Agent for river-2 (${modelDesc})\n`);
+  console.log(`Setting up Managed Agent for river (${modelDesc})\n`);
   const envId = await ensureEnv();
   const memoryStoreId = await ensureMemoryStore();
   const agentId = await ensureAgent(config);

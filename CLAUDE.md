@@ -1,6 +1,9 @@
-# river-2
+# river
 
-Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant turn is a card, branches are arrows, and the brain is a Managed Agent that lives across the whole canvas (one persistent session per project, one provisioned agent per project). The agent is positioned as a **steward** of the canvas — it answers turns AND tends the workspace: creating, flagging, linking, and editing cards over time. Multiple parallel root streams can coexist on a single canvas. Two-process app — Vite (web) + Express (single source of truth + Anthropic proxy).
+> The product is named **river**. Internal storage identifiers (`river-2.db`, `river-2-active-v2` localStorage key, `river-2-graph` tldraw IndexedDB key, `river-2-env`, `river-2-memory`) are intentionally still suffixed `-2` — renaming them would orphan existing user state, the agent's memory store, and the SQLite database. Treat the storage keys as a frozen schema id, not the product name.
+
+
+Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant turn is a card, branches are arrows, and the brain is a Managed Agent that lives across the whole canvas (one persistent session per project, one provisioned agent per project). The agent is positioned as a **cartographer** of the canvas — it answers turns AND tends the workspace: creating, flagging, linking, and editing cards over time. Multiple parallel root streams can coexist on a single canvas. Two-process app — Vite (web) + Express (single source of truth + Anthropic proxy).
 
 ## Run
 
@@ -57,7 +60,7 @@ The Express server (`server.js` + a SQLite-backed `db.js`) is the canonical stor
 
 ## Concepts that are not obvious from the code
 
-**Steward agent, not just respondent.** `scripts/agent.yml`'s system prompt frames the agent's role as "steward of a thinking canvas" — its job is to keep the workspace legible and useful as it grows. Every turn is also an opportunity to maintain the canvas: flag a turning point, draw a lateral link the parent → child tree can't express, refine an earlier card that aged badly, surface an unexplored angle as a draft branch. The cadence target is ~0–2 stewardship moves per turn, taken only when genuinely earned. The bar in the prompt: *would the user, looking at the canvas a week from now, be glad you took the action?*
+**Cartographer agent, not just respondent.** `scripts/agent.yml`'s system prompt frames the agent's role as "cartographer of a thinking canvas" — its job is to keep the workspace legible and useful as it grows. Every turn is also an opportunity to maintain the canvas: flag a turning point, draw a lateral link the parent → child tree can't express, refine an earlier card that aged badly, surface an unexplored angle as a draft branch. The cadence target is ~0–2 cartographer moves per turn, taken only when genuinely earned. The bar in the prompt: *would the user, looking at the canvas a week from now, be glad you took the action?*
 
 **The brain is a Managed Agent with one session per project.** A "project" = one canvas. Each project gets its own provisioned agent at create time (immutable, versioned), and its own session id stored on the project row server-side. `/api/generate` accepts `sessionId`, `pathIds`, and `responseCardId` in the request body:
 - If a session id exists, the server reuses it and sends a **skinny kickoff** (`buildSkinnyKickoff`: branch path of card ids + this turn's priority constraints / chip context + the new question — ~30-100 tokens; the session's event log already has all priors).
@@ -87,7 +90,7 @@ Sessions are NOT deleted on completion; the canvas's event log + container state
 - **`link_cards(from_id, to_id, kind)`** — draws a lateral dashed arrow between two cards in the graph beyond the parent → child tree. `kind` is a short verb label ("answers", "contradicts", "elaborates", "supersedes").
 - **`present_options(card_id, options[])`** — attaches tappable pill-options to a card so the user can pick from a discrete set without retyping. Each pill becomes the user's next message verbatim when tapped.
 
-**Autonomous wake.** With `WAKE_INTERVAL_SEC` set, a cron loop in `server.js` walks projects on the configured interval and runs `runWakeForProject(projectId)` on any that are quiet and recent enough (gated by `WAKE_MIN_QUIET_SEC` and `WAKE_MAX_AGE_HOURS`). The wake kickoff (`buildAutonomousKickoff`) tells the agent: no user is present, take ONE useful stewardship action (flag / link / edit / small elaboration card) or write a single sentence saying nothing was worth doing. `create_branch` and `present_options` are disabled in wake mode (no user to react). Manual wakes are also exposed via `POST /api/projects/:id/wake`.
+**Autonomous wake.** With `WAKE_INTERVAL_SEC` set, a cron loop in `server.js` walks projects on the configured interval and runs `runWakeForProject(projectId)` on any that are quiet and recent enough (gated by `WAKE_MIN_QUIET_SEC` and `WAKE_MAX_AGE_HOURS`). The wake kickoff (`buildAutonomousKickoff`) tells the agent: no user is present, take ONE useful cartographer action (flag / link / edit / small elaboration card) or write a single sentence saying nothing was worth doing. `create_branch` and `present_options` are disabled in wake mode (no user to react). Manual wakes are also exposed via `POST /api/projects/:id/wake`.
 
 **The store is canonical inside a tab; the server is canonical across tabs.** Inside a tab, every mutation goes through `useConversation` → tldraw via the syncer hook. Across tabs, the server holds the truth: client mutations also fire the corresponding `/api/projects/:id/*` endpoint, and incoming WebSocket events apply to the local store. Read paths (`historyFor`, `pathIdsFor`, `getParentId`, `gatherEmphasized`, `relayoutAll`) walk the graph store.
 

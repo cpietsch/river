@@ -1,4 +1,4 @@
-# river-2: a chat that lives on a canvas
+# river: a chat that lives on a canvas
 
 A prototype that asks: what if the conversation with the model wasn't a tape, but a workspace?
 
@@ -12,17 +12,17 @@ You **lose the branches**. Real conversations fork — *we tried that, we backed
 
 And you **lose the turning points**. The most valuable moments in a working session are usually two or three sentences buried inside a fifteen-paragraph response — *that's the thing*, *that reframes everything*, *come back to this*. There's no place for that signal to live.
 
-## What river-2 is
+## What river is
 
-river-2 puts every turn on an infinite canvas as a card. User messages are one color, model responses another, parent → child arrows show the flow. You can branch from any card by tapping the small `+` just below it — a new user input sprouts as a sibling, the original branch is preserved, and you keep going from that point in a different direction. You can run several parallel root streams side by side on the same canvas. You can flag turning points, draw lateral links between cards in different branches, edit a response in place if it didn't quite land.
+river puts every turn on an infinite canvas as a card. User messages are one color, model responses another, parent → child arrows show the flow. You can branch from any card by tapping the small `+` just below it — a new user input sprouts as a sibling, the original branch is preserved, and you keep going from that point in a different direction. You can run several parallel root streams side by side on the same canvas. You can flag turning points, draw lateral links between cards in different branches, edit a response in place if it didn't quite land.
 
 The graph of your thinking becomes a thing you can see, navigate, and build on. That's the visible half.
 
 The interesting half is what's behind the screen.
 
-## The agent is a steward, not a respondent
+## The agent is a cartographer, not a respondent
 
-The default framing for a chat model is: *answer what I asked*. river-2's framing is different. The agent is positioned as a **steward of the canvas** — its job is to keep the workspace legible and useful as it grows, not just to answer the latest prompt.
+The default framing for a chat model is: *answer what I asked*. river's framing is different. The agent is positioned as a **cartographer of the canvas** — its job is to keep the workspace legible and useful as it grows, not just to answer the latest prompt.
 
 Every turn is also an opportunity to:
 
@@ -31,7 +31,7 @@ Every turn is also an opportunity to:
 - **Edit** an earlier card you wrote that has aged badly with new context — *not* a new card with the rewrite. The original card transforms.
 - **Propose a branch** — surface an unexplored angle as a small draft the user can accept or dismiss.
 
-The bar the system prompt asks the agent to meet, before any stewardship action: *would the user, looking at the canvas a week from now, be glad I took this action?* If not, skip it. Most turns warrant zero stewardship moves; the goal isn't to be busy, it's to leave the canvas a little more navigable than the agent found it.
+The bar the system prompt asks the agent to meet, before any cartographer action: *would the user, looking at the canvas a week from now, be glad I took this action?* If not, skip it. Most turns warrant zero cartographer moves; the goal isn't to be busy, it's to leave the canvas a little more navigable than the agent found it.
 
 This works because the agent has hands inside the canvas. It can't just say "you should flag card #3" — it actually flags it, and the card grows a red FLAGGED badge with the agent's one-line reason on hover. When you ask for five project intros, you don't get five paragraphs in one card; you get five separate cards, batched in one round-trip, each one its own artifact you can branch off, edit, or link from independently. When you say "punch up the third one," the third card rewrites in place.
 
@@ -41,7 +41,7 @@ Each canvas is a *project*. A project has one persistent Anthropic Managed Agent
 
 There's a writable memory store at `/mnt/memory/` that the agent uses across all your canvases. Preferences, recurring topics, durable conclusions. It's not a clever hack — it's a mounted directory the agent can `read`, `write`, and `glob`. Over time it becomes the kind of notebook a colleague would keep about you. *Crp prefers concise prose, single-paragraph answers when possible. Working on hardware-software bridge prototypes in 2026. Skeptical of feature flags.*
 
-With autonomous wake enabled (off by default, optionally on a cron loop), the agent occasionally runs without a user present to do a quiet stewardship pass. It might flag a card it didn't notice was a turning point at the time, or draw a link between two threads that only became relevant later. You come back the next morning and the canvas has been quietly tidied.
+With autonomous wake enabled (off by default, optionally on a cron loop), the agent occasionally runs without a user present to do a quiet cartographer pass. It might flag a card it didn't notice was a turning point at the time, or draw a link between two threads that only became relevant later. You come back the next morning and the canvas has been quietly tidied.
 
 ## A few design moves worth naming
 
@@ -65,7 +65,7 @@ But the shape is real, and the shape is the point: a chat where the conversation
 
 A few directions feel worth exploring:
 
-- **Multi-user canvases.** The server-as-source-of-truth refactor was done with this in mind. Two people on the same canvas, agent doing stewardship for both.
+- **Multi-user canvases.** The server-as-source-of-truth refactor was done with this in mind. Two people on the same canvas, agent doing cartographer work for both.
 - **Memory across canvases as the primary surface**, with canvases as cheap, disposable working sets.
 - **Stewardship policies** the user can shape — *flag liberally on this canvas; never edit my user cards even if I ask*; saved as memories the agent honors.
 - **Specialized custom tools** beyond the seven built in: scheduling a follow-up, reaching into a connected datasource, summarizing a card to a different audience.

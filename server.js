@@ -513,7 +513,7 @@ app.post('/api/generate', async (req, res) => {
             memory_store_id: MEMORY_STORE_ID,
             access: 'read_write',
             instructions:
-              'Long-term memory across all river-2 conversations. Read first; write durably useful learnings (preferences, recurring topics). Skip one-off chatter.',
+              'Long-term memory across all river conversations. Read first; write durably useful learnings (preferences, recurring topics). Skip one-off chatter.',
           },
         ];
       }
@@ -559,7 +559,7 @@ app.post('/api/generate', async (req, res) => {
       const sessionParams = { agent: agentForSession, environment_id: ENV_ID, title: input.trim().slice(0, 60) };
       if (MEMORY_STORE_ID) {
         sessionParams.resources = [
-          { type: 'memory_store', memory_store_id: MEMORY_STORE_ID, access: 'read_write', instructions: 'Long-term memory across all river-2 conversations.' },
+          { type: 'memory_store', memory_store_id: MEMORY_STORE_ID, access: 'read_write', instructions: 'Long-term memory across all river conversations.' },
         ];
       }
       const created = await anthropic.beta.sessions.create(sessionParams);
@@ -2001,7 +2001,7 @@ async function provisionProjectAgent(projectId) {
   try {
     const config = {
       ...AGENT_TEMPLATE,
-      name: `river-2 · ${projectId}`,
+      name: `river · ${projectId}`,
     };
     const agent = await anthropic.beta.agents.create(config);
     logEvent('agent.provisioned', { projectId, agentId: agent.id });
@@ -2307,6 +2307,6 @@ function broadcast(projectId, event) {
 }
 
 httpServer.listen(PORT, () => {
-  console.log(`river-2 api on :${PORT}  main=${MAIN_MODEL}  mist=${MIST_MODEL}`);
+  console.log(`river api on :${PORT}  main=${MAIN_MODEL}  mist=${MIST_MODEL}`);
 });
  

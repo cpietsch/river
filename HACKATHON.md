@@ -1,11 +1,11 @@
-# river-2 — hackathon submission plan
+# river — hackathon submission plan
 
 **Deadline:** 8:00 PM ET, ~12 hours from now.
 **Required:** 3-min demo video (YouTube / Loom / Drive) + public GitHub repo + submission form.
 
 ## Pitch (one sentence)
 
-river-2 is a chat that lives on an infinite canvas, with an Opus-4.7 Managed Agent positioned as a **steward of the workspace** — it answers turns AND maintains the canvas across days, flagging turning points, drawing lateral links, editing earlier cards, and quietly tidying between sessions via autonomous wake.
+river is a chat that lives on an infinite canvas, with an Opus-4.7 Managed Agent positioned as a **cartographer of the workspace** — it answers turns AND maintains the canvas across days, flagging turning points, drawing lateral links, editing earlier cards, and quietly tidying between sessions via autonomous wake.
 
 ## Why we win each criterion
 
@@ -13,9 +13,9 @@ river-2 is a chat that lives on an infinite canvas, with an Opus-4.7 Managed Age
 
 The problem is universal: **linear chat is a tape**. Every working session burns context, every fork is destructive, every turning point gets buried. The shape of a thinking session is a graph, not a thread, and people who use chat models heavily for actual work hit this wall every day.
 
-river-2 isn't a UI gimmick — it's a different relationship with the model. The agent has hands inside the workspace; persistent memory; structure that accumulates instead of evaporates. Who benefits: anyone using chat for research, design, planning, writing — i.e. most of the people most invested in heavy LLM use.
+river isn't a UI gimmick — it's a different relationship with the model. The agent has hands inside the workspace; persistent memory; structure that accumulates instead of evaporates. Who benefits: anyone using chat for research, design, planning, writing — i.e. most of the people most invested in heavy LLM use.
 
-The "canvas as a maintained thinking environment" framing generalizes. The hard part — wiring custom tools through Managed Agents into a living UI — is now a working substrate that can host more specialized stewardship for any vertical (research analyst, ops planner, writer's room).
+The "canvas as a maintained thinking environment" framing generalizes. The hard part — wiring custom tools through Managed Agents into a living UI — is now a working substrate that can host more specialized cartographer for any vertical (research analyst, ops planner, writer's room).
 
 ### Demo (25%) — *working, impressive, holds up live*
 
@@ -25,9 +25,9 @@ It's a working app. Multi-canvas. Persistent across reloads, days, devices. Agen
 
 Opus 4.7 is the brain. We use it through Managed Agents (a non-trivial integration), with **eight custom tools** that let the model directly mutate the canvas: `create_card`, `create_cards` (batched), `edit_card`, `link_cards`, `flag_card`, `create_branch`, `present_options`, plus read tools `get_graph_summary` / `get_card`.
 
-Beyond the integration: we **reframe the agent's role** in its system prompt — not "respondent" but "steward of a thinking canvas." Every turn is also a chance to maintain the workspace. The bar in the prompt: *would the user, looking at the canvas a week from now, be glad you took this action?* This is a behavioral capability surface most integrations don't reach for.
+Beyond the integration: we **reframe the agent's role** in its system prompt — not "respondent" but "cartographer of a thinking canvas." Every turn is also a chance to maintain the workspace. The bar in the prompt: *would the user, looking at the canvas a week from now, be glad you took this action?* This is a behavioral capability surface most integrations don't reach for.
 
-The model also runs **autonomously between sessions** (autonomous wake) — a separate kickoff prompt tells it: no user is here, take ONE useful stewardship action or write a single sentence saying nothing was worth doing. Opus 4.7 quietly tidies the canvas while you're away. This is a use of the model's judgment, not its raw output.
+The model also runs **autonomously between sessions** (autonomous wake) — a separate kickoff prompt tells it: no user is here, take ONE useful cartographer action or write a single sentence saying nothing was worth doing. Opus 4.7 quietly tidies the canvas while you're away. This is a use of the model's judgment, not its raw output.
 
 ### Depth & Execution (20%) — *wrestled with, real craft*
 
@@ -47,15 +47,15 @@ Three docs in the repo: `README.md` (experience), `WRITEUP.md` (essay), `CLAUDE.
 ## Prize fit
 
 - **Best Use of Claude Managed Agents** — this is *the* central technical bet. Per-project agent provisioning, per-project sessions, persistent memory store, eight custom tools, container state evolving across days. A reference example.
-- **"Keep Thinking" Prize** — autonomous wake literally has the model keep thinking on the canvas between user sessions. The wake kickoff is a deliberate stewardship prompt, not an idle ping.
-- **Most Creative Opus 4.7 Exploration** — Opus with hands inside the workspace + a steward role + autonomous wake + 8 custom tools. The agent doesn't just respond; it maintains.
+- **"Keep Thinking" Prize** — autonomous wake literally has the model keep thinking on the canvas between user sessions. The wake kickoff is a deliberate cartographer prompt, not an idle ping.
+- **Most Creative Opus 4.7 Exploration** — Opus with hands inside the workspace + a cartographer role + autonomous wake + 8 custom tools. The agent doesn't just respond; it maintains.
 
 ## 3-minute demo script
 
 Total budget: 180 seconds. Practice once before recording.
 
 **0:00 – 0:15 — open with the problem (15s)**
-> "Most chat with a model lives in a single thread. You scroll, you lose the thread, the model forgets, every fork is destructive. river-2 puts the conversation on a canvas, and the agent has hands inside it."
+> "Most chat with a model lives in a single thread. You scroll, you lose the thread, the model forgets, every fork is destructive. river puts the conversation on a canvas, and the agent has hands inside it."
 
 Visual: title card or quick scroll of a long ChatGPT-style transcript.
 
@@ -66,7 +66,7 @@ Visual: title card or quick scroll of a long ChatGPT-style transcript.
 - Hit `+` below the assistant card to branch.
 - Type a follow-up that pivots. Show the perspective pills above the input refreshed for *this* card.
 
-**1:00 – 1:45 — agent as steward (45s)**
+**1:00 – 1:45 — agent as cartographer (45s)**
 - Ask something that produces a multi-card output ("give me 4 framings of this problem"). Show the four cards materialize.
 - Show a flag appearing automatically on the most pivotal card (red FLAGGED badge with reason on hover).
 - Ask the agent to refine card #3. Show it edit *in place* — not a new card.
@@ -104,7 +104,7 @@ Show the repo URL.
 
 ### T-6 → T-3 (2 AM → 5 AM) — submission text + repo polish
 - [ ] Write the submission form copy (see template below).
-- [ ] If the form asks for problem-statement fit, name the relevant one and explicitly tie river-2's mechanics to it.
+- [ ] If the form asks for problem-statement fit, name the relevant one and explicitly tie river's mechanics to it.
 - [ ] Add a `## Demo` section to README with the video link + a single screenshot.
 - [ ] Make sure `.env` is gitignored and no API keys are in commit history (`git log -p -- .env` should be empty).
 - [ ] Tag a release: `git tag -a hackathon-v1 -m "submission tag"`, push tag.
@@ -121,17 +121,17 @@ Show the repo URL.
 
 ## Submission form copy template
 
-> **Project name:** river-2
+> **Project name:** river
 >
-> **One-liner:** A chat that lives on an infinite canvas, with an Opus-4.7 Managed Agent that stewards the workspace across days — flagging turning points, drawing lateral links, editing earlier cards, and quietly tidying between sessions.
+> **One-liner:** A chat that lives on an infinite canvas, with an Opus-4.7 Managed Agent that tends the workspace across days — flagging turning points, drawing lateral links, editing earlier cards, and quietly tidying between sessions.
 >
-> **What it does:** [paste two paragraphs from WRITEUP.md "What river-2 is" section]
+> **What it does:** [paste two paragraphs from WRITEUP.md "What river is" section]
 >
-> **What's most novel about how it uses Opus 4.7:** Opus 4.7 has *hands inside the workspace* via eight custom tools (`create_card`, `create_cards`, `edit_card`, `link_cards`, `flag_card`, `create_branch`, `present_options`, plus reads). It's framed in its system prompt as a steward — every turn is also a chance to maintain the canvas. With autonomous wake enabled, Opus runs without a user present to take quiet stewardship actions between sessions. We exercise the model's judgment, not just its raw output.
+> **What's most novel about how it uses Opus 4.7:** Opus 4.7 has *hands inside the workspace* via eight custom tools (`create_card`, `create_cards`, `edit_card`, `link_cards`, `flag_card`, `create_branch`, `present_options`, plus reads). It's framed in its system prompt as a cartographer — every turn is also a chance to maintain the canvas. With autonomous wake enabled, Opus runs without a user present to take quiet cartographer actions between sessions. We exercise the model's judgment, not just its raw output.
 >
 > **Why Managed Agents:** Per-project agent provisioning, persistent sessions evolving across days, mounted memory store at `/mnt/memory/` shared across canvases, container state across reloads, skinny per-turn kickoff so persistent sessions don't suffer quadratic context blowup. The platform's stateful primitives are load-bearing — we couldn't do this with raw Messages.
 >
-> **Repo:** https://github.com/[…]/river-2
+> **Repo:** https://github.com/[…]/river
 > **Demo video:** [URL]
 
 ## Risks / what could break

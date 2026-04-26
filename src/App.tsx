@@ -65,7 +65,7 @@ export function App() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
-  const [proposals, setProposals] = useState<BranchProposal[]>([]);
+  const proposals = useConversation((s) => s.proposals);
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryFiles, setMemoryFiles] = useState<Record<string, string> | null>(
     null,
@@ -296,9 +296,12 @@ export function App() {
   }, []);
 
   // Initial fill on mount: any persisted-but-unlabeled cards get titled in
-  // the background while the user catches their breath.
+  // the background while the user catches their breath. Also drop any
+  // persisted branch proposals whose parent card no longer exists (deleted
+  // out from under them while the canvas was closed).
   useEffect(() => {
     void refreshLabels();
+    useConversation.getState().pruneStaleProposals();
   }, [refreshLabels]);
 
   const runTurnFrom = useCallback(
@@ -475,15 +478,7 @@ export function App() {
                   proposalId: p.proposalId,
                   parentId: p.parentId,
                 });
-                setProposals((cur) => {
-                  // Drop any existing entry with the same proposalId so a
-                  // re-emitted event doesn't duplicate (defensive).
-                  const filtered = cur.filter(
-                    (x) => x.proposalId !== p.proposalId,
-                  );
-                  // Cap the panel at 5 to avoid runaway noise.
-                  return [p, ...filtered].slice(0, 5);
-                });
+                useConversation.getState().addProposal(p);
               },
             },
           );
@@ -679,11 +674,14 @@ export function App() {
   // present_options. The pill text is the literal next user message —
   // pushes it through the same handleSubmit path the typed input uses,
   // so any user-side toggled pills / selected chips merge in exactly as
-  // if the user had typed and hit send.
+  // if the user had typed and hit send. Clears the options on the
+  // source card after picking so the chosen pill (now visible as a
+  // proper user turn) becomes the only record.
   const pickOption = useCallback(
-    (text: string) => {
+    (cardId: TurnId, text: string) => {
       if (!text.trim()) return;
-      logEvent('client.option_picked', { text });
+      logEvent('client.option_picked', { cardId, text });
+      useConversation.getState().setCardOptions(cardId, []);
       void handleSubmit(text);
     },
     [handleSubmit],
@@ -694,9 +692,7 @@ export function App() {
       const turn = useConversation.getState().getTurn(p.parentId as TurnId);
       if (!turn) {
         // Parent gone (rare — user deleted the card mid-stream). Drop it.
-        setProposals((cur) =>
-          cur.filter((x) => x.proposalId !== p.proposalId),
-        );
+        useConversation.getState().removeProposal(p.proposalId);
         return;
       }
       const newId = createBranchUserTurn(p.parentId as TurnId);
@@ -705,9 +701,7 @@ export function App() {
         proposalId: p.proposalId,
         parentId: p.parentId,
       });
-      setProposals((cur) =>
-        cur.filter((x) => x.proposalId !== p.proposalId),
-      );
+      useConversation.getState().removeProposal(p.proposalId);
       // Treat as if the user is on this new branch: clears input, creates
       // a follow-up empty user turn after the stream completes, pans the
       // camera. Without `activate`, runTurnFrom's "is this the active
@@ -723,7 +717,7 @@ export function App() {
 
   const dismissProposal = useCallback((proposalId: string) => {
     logEvent('client.proposal_dismiss', { proposalId });
-    setProposals((cur) => cur.filter((x) => x.proposalId !== proposalId));
+    useConversation.getState().removeProposal(proposalId);
   }, []);
 
   const togglePrediction = useCallback(
@@ -840,8 +834,8 @@ export function App() {
     });
     // Archive the current canvas — preserves its session so the user can
     // jump back into it from the projects menu. Deletion is manual.
+    // archiveAndReset also clears proposals; no separate call needed.
     useConversation.getState().archiveAndReset();
-    setProposals([]);
     const id = useConversation
       .getState()
       .createTurn({ role: 'user', parentId: null });
@@ -859,8 +853,8 @@ export function App() {
       const editor = editorRef.current;
       if (!editor) return;
       const ok = useConversation.getState().resumeArchived(archiveId);
+      // resumeArchived also clears proposals on swap.
       if (!ok) return;
-      setProposals([]);
       logEvent('client.resume_project', { archiveId });
       // Re-seat active on the most recent empty user turn in the resumed
       // canvas (mirrors handleMount logic), or the latest turn otherwise.

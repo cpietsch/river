@@ -316,7 +316,7 @@ function CardBody({ shape }: { shape: CardShape }) {
                 <button
                   key={`${i}-${opt}`}
                   type="button"
-                  onPointerDown={tap(() => actions?.pickOption(opt))}
+                  onPointerDown={tap(() => actions?.pickOption(shape.id, opt))}
                   style={{
                     display: 'inline-block',
                     padding: '6px 12px',

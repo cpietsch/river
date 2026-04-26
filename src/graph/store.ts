@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { createShapeId } from 'tldraw';
-import type { AgentPrediction, ChipSpan } from '../api';
+import type { AgentPrediction, BranchProposal, ChipSpan } from '../api';
 import type { Turn, TurnId, TurnMeta, TurnRole } from './types';
 
 interface NewTurnInit {
@@ -44,10 +44,18 @@ interface ConversationStore {
   // cleared on the first text delta after, and on stream end. Not
   // persisted — pure UI feedback.
   activity: { turnId: TurnId; text: string } | null;
+  // Pending branch proposals from the agent (create_branch). Persisted
+  // alongside the active canvas so reloads don't lose them. Cleared on
+  // accept / dismiss / canvas switch / + new.
+  proposals: BranchProposal[];
 
   // Mutations — active canvas
   setProjectSessionId: (id: string | null) => void;
   setActivity: (entry: { turnId: TurnId; text: string } | null) => void;
+  addProposal: (proposal: BranchProposal) => void;
+  removeProposal: (proposalId: string) => void;
+  clearProposals: () => void;
+  pruneStaleProposals: () => void; // drops proposals whose parentId no longer exists
   createTurn: (init: NewTurnInit) => TurnId;
   setContent: (
     id: TurnId,
@@ -109,9 +117,34 @@ export const useConversation = create<ConversationStore>()(
   projectSessionId: null,
   archive: [],
   activity: null,
+  proposals: [],
 
   setProjectSessionId: (id) => set({ projectSessionId: id }),
   setActivity: (entry) => set({ activity: entry }),
+
+  addProposal: (proposal) =>
+    set((s) => {
+      // Drop any duplicate (same proposalId) and cap at 5 to avoid runaway
+      // visual noise from chatty agents.
+      const filtered = s.proposals.filter(
+        (p) => p.proposalId !== proposal.proposalId,
+      );
+      return { proposals: [proposal, ...filtered].slice(0, 5) };
+    }),
+
+  removeProposal: (proposalId) =>
+    set((s) => ({
+      proposals: s.proposals.filter((p) => p.proposalId !== proposalId),
+    })),
+
+  clearProposals: () => set({ proposals: [] }),
+
+  pruneStaleProposals: () =>
+    set((s) => ({
+      proposals: s.proposals.filter(
+        (p) => !!s.turns[p.parentId as TurnId],
+      ),
+    })),
 
   createTurn: (init) => {
     const id: TurnId = init.id ?? createShapeId();
@@ -304,7 +337,7 @@ export const useConversation = create<ConversationStore>()(
     return Array.from(toRemove);
   },
 
-  reset: () => set({ turns: {}, projectSessionId: null }),
+  reset: () => set({ turns: {}, projectSessionId: null, proposals: [] }),
 
   // Stash the active canvas onto the archive list and clear active state. No
   // session deletion — the user may resume this project later. Empty active
@@ -332,6 +365,7 @@ export const useConversation = create<ConversationStore>()(
         turns: {},
         projectSessionId: null,
         archive: nextArchive,
+        proposals: [],
       };
     });
   },
@@ -364,6 +398,10 @@ export const useConversation = create<ConversationStore>()(
       turns: target.turns,
       projectSessionId: target.sessionId,
       archive: nextArchive,
+      // Different canvas → different proposal set. Resumed projects don't
+      // currently carry their old proposals (proposals were ephemeral
+      // before this commit; archived projects predate persistence).
+      proposals: [],
     });
     return true;
   },
@@ -431,6 +469,7 @@ export const useConversation = create<ConversationStore>()(
         turns: state.turns,
         projectSessionId: state.projectSessionId,
         archive: state.archive,
+        proposals: state.proposals,
       }),
     },
   ),

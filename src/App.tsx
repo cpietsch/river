@@ -91,15 +91,22 @@ export function App() {
       if (info) setAgentInfo(info);
     });
   }, []);
-  const activeProjectName = useConversation((s) => {
-    const fromList = s.projects.find((p) => p.id === s.activeProjectId);
+  // Pull stable scalar/object refs from the store, then derive everything
+  // else with useMemo. zustand's useSyncExternalStore-based selectors
+  // require a cached snapshot — calling .filter() / .find() inside the
+  // selector returns a new array each call and triggers an infinite
+  // render loop.
+  const projectsList = useConversation((s) => s.projects);
+  const activeProjectIdSelRaw = useConversation((s) => s.activeProjectId);
+  const turnsSel = useConversation((s) => s.turns);
+  const activeProjectName = useMemo(() => {
+    const fromList = projectsList.find((p) => p.id === activeProjectIdSelRaw);
     if (fromList?.name && fromList.name !== 'untitled canvas') return fromList.name;
-    return deriveProjectName(s.turns);
-  });
-  // The "other projects" list shown in the projects menu: every server-
-  // side project except the one this tab is currently looking at.
-  const otherProjects = useConversation((s) =>
-    s.projects.filter((p) => p.id !== s.activeProjectId),
+    return deriveProjectName(turnsSel);
+  }, [projectsList, activeProjectIdSelRaw, turnsSel]);
+  const otherProjects = useMemo(
+    () => projectsList.filter((p) => p.id !== activeProjectIdSelRaw),
+    [projectsList, activeProjectIdSelRaw],
   );
   const activeSessionId = useConversation((s) => s.projectSessionId);
 
@@ -336,9 +343,10 @@ export function App() {
   // /api/generate's tool resolvers) and user-emitted (via the per-mutation
   // endpoints). Other tabs / devices / the future background worker push
   // changes through this channel and the local store catches them up.
-  const activeProjectIdSel = useConversation((s) => s.activeProjectId);
+  // (activeProjectIdSelRaw is already pulled above; reuse for the WS
+  // subscription effect.)
   useEffect(() => {
-    const projectId = activeProjectIdSel;
+    const projectId = activeProjectIdSelRaw;
     if (!projectId) return;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/projects/${encodeURIComponent(projectId)}`);
@@ -449,7 +457,7 @@ export function App() {
         }
       }
     };
-  }, [activeProjectIdSel]);
+  }, [activeProjectIdSelRaw]);
 
   // Mount-time bootstrap is defined later (after refreshProjects /
   // switchToProject are declared) — see the useEffect below.

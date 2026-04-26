@@ -29,6 +29,7 @@ import {
   removeProposalRemote,
   streamGenerate,
   upsertTurnRemote,
+  wakeProject,
   type AgentInfo,
   type ChatMessage,
   type AgentPrediction,
@@ -1210,6 +1211,33 @@ export function App() {
     logEvent('client.reset_session', { sessionId: cur });
   }, []);
 
+  // Phase 1: ask the agent to take an autonomous turn on the active
+  // project. Useful as a manual trigger before the cron loop ships;
+  // every mutation flows through the WS channel so the canvas updates
+  // live as the agent works.
+  const [wakeBusy, setWakeBusy] = useState(false);
+  const wakeActive = useCallback(async () => {
+    const projectId = useConversation.getState().activeProjectId;
+    const sessionId = useConversation.getState().projectSessionId;
+    if (!sessionId) {
+      // No session yet — autonomous turns require an existing session
+      // to wake (cheaper + agent has memory). Tell the user.
+      alert(
+        'No agent session yet. Take a first turn so a session is minted, then come back.',
+      );
+      return;
+    }
+    setWakeBusy(true);
+    logEvent('client.wake_start', { projectId });
+    try {
+      const result = await wakeProject(projectId);
+      logEvent('client.wake_end', { projectId, ok: result.ok });
+      if (!result.ok) alert(`wake failed: ${result.error}`);
+    } finally {
+      setWakeBusy(false);
+    }
+  }, []);
+
   function onInputChange(text: string): void {
     setInput(text);
   }
@@ -1403,6 +1431,7 @@ export function App() {
               activeSessionId={activeSessionId}
               info={agentInfo}
               archive={archivedProjects}
+              wakeBusy={wakeBusy}
               onClose={() => setProjectsOpen(false)}
               onNew={() => {
                 setProjectsOpen(false);
@@ -1415,6 +1444,10 @@ export function App() {
               onResetSession={() => {
                 setProjectsOpen(false);
                 resetActiveSession();
+              }}
+              onWake={() => {
+                setProjectsOpen(false);
+                void wakeActive();
               }}
               onDelete={deleteArchivedProject}
               onRename={renameArchivedProject}
@@ -1981,10 +2014,12 @@ function ProjectsMenu({
   activeSessionId,
   info,
   archive,
+  wakeBusy,
   onClose,
   onNew,
   onResume,
   onResetSession,
+  onWake,
   onDelete,
   onRename,
 }: {
@@ -1992,10 +2027,12 @@ function ProjectsMenu({
   activeSessionId: string | null;
   info: AgentInfo | null;
   archive: import('./graph/store').ArchivedProject[];
+  wakeBusy: boolean;
   onClose: () => void;
   onNew: () => void;
   onResume: (id: string) => void;
   onResetSession: () => void;
+  onWake: () => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
@@ -2127,6 +2164,42 @@ function ProjectsMenu({
           >
             active
           </span>
+          {activeSessionId && (
+            <button
+              type="button"
+              onClick={onWake}
+              disabled={wakeBusy}
+              aria-label="Ask the agent to take an autonomous turn"
+              title="Wake the agent: it reviews the canvas + memory and contributes one useful thing if it sees something (a flag, a link, a draft) — or ends silently."
+              style={{
+                flex: '0 0 auto',
+                border: 'none',
+                background: 'none',
+                padding: 4,
+                cursor: wakeBusy ? 'default' : 'pointer',
+                color: wakeBusy ? '#cccccc' : '#6b6660',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 4,
+              }}
+              onMouseEnter={(e) => {
+                if (!wakeBusy) e.currentTarget.style.color = '#1a1a1a';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = wakeBusy ? '#cccccc' : '#6b6660';
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1M9 12a3 3 0 1 1 6 0 3 3 0 0 1-6 0z"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          )}
           {activeSessionId && (
             <button
               type="button"

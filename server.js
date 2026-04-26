@@ -1249,6 +1249,431 @@ app.delete('/api/session/:id', async (req, res) => {
   }
 });
 
+// ───────────────────── Phase 1: autonomous turns (wake) ─────────────────
+//
+// POST /api/projects/:id/wake fires a turn at a project's persistent
+// session WITHOUT a user message. The agent reviews the canvas + memory
+// and contributes one useful thing if it sees something — flags a card,
+// drafts a follow-up via create_card, draws a link between cards in
+// different branches — or ends its turn silently if nothing meaningful
+// surfaces. Mutations land in the DB + broadcast via the WS channel,
+// so any client connected to the project sees them live; offline users
+// see them on next mount-time fetchProjectState.
+
+const wakeInFlight = new Set(); // projectIds with an in-flight wake
+
+function buildAutonomousKickoff(projectId, responseCardId, turns) {
+  const rendered = Object.values(turns)
+    .map(
+      (t) =>
+        `[${t.id}] role=${t.role} parent=${t.parentId ?? 'none'}\n${(t.content ?? '').trim()}`,
+    )
+    .join('\n\n---\n\n');
+  return `AUTONOMOUS WAKE — the user is NOT present right now. They will read what you do later.
+
+Look at the canvas (graph below) and your /mnt/memory/ store. Contribute ONE meaningful thing if you see something worth doing:
+- flag a turning point you missed earlier (flag_card)
+- draw a link between cards in different branches that touch the same idea (link_cards)
+- draft a card that elaborates an open question or refines a vague conclusion (create_card under the right parent)
+- edit a card you wrote that you can sharpen (edit_card)
+
+If nothing genuinely useful comes to mind, write a single short sentence saying so and end your turn — better than noise.
+
+DO NOT call create_branch (those need a user to accept; with no user here they'd just pile up).
+DO NOT call present_options (no one to pick).
+
+YOUR RESPONSE CARD: ${responseCardId} — your prose lands here. Reference it as parent_id for create_card if you want sub-cards.
+
+Project: ${projectId}
+
+CANVAS:
+
+${rendered}
+
+Begin.`;
+}
+
+app.post('/api/projects/:id/wake', async (req, res) => {
+  const projectId = req.params.id;
+  const project = db.getProject(projectId);
+  if (!project) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  if (!project.sessionId) {
+    res.status(400).json({
+      error: 'no session yet — the user must take at least one turn first',
+    });
+    return;
+  }
+  if (wakeInFlight.has(projectId)) {
+    res.status(429).json({ error: 'a wake is already in flight for this project' });
+    return;
+  }
+  wakeInFlight.add(projectId);
+
+  const startedAt = Date.now();
+  let toolUses = 0;
+  let customToolUses = 0;
+  let assistantBuffer = '';
+  let responseCardId = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  try {
+    const allTurns = db.listTurns(projectId);
+    if (allTurns.length === 0) {
+      res.status(400).json({ error: 'project has no turns to reflect on' });
+      return;
+    }
+    // Parent the autonomous response under the most recent assistant card
+    // (or the most recent turn if no assistants exist yet) so it shows up
+    // in a sensible place on the canvas.
+    const newest = [...allTurns].sort((a, b) => b.createdAt - a.createdAt);
+    const parentTurn =
+      newest.find((t) => t.role === 'assistant') ?? newest[0];
+
+    responseCardId = makeShapeId();
+    const respShell = {
+      id: responseCardId,
+      projectId,
+      role: 'assistant',
+      content: '',
+      parentId: parentTurn.id,
+      emphasis: 1,
+      streaming: true,
+      meta: {},
+    };
+    db.upsertTurn(respShell);
+    broadcast(projectId, { type: 'turn_upsert', turn: respShell });
+
+    // Build the graph snapshot the autonomous prompt + custom tool
+    // resolvers will reference. Same shape as /api/generate's `graph`.
+    const graphSnap = { turns: {} };
+    for (const t of allTurns) {
+      graphSnap.turns[t.id] = {
+        id: t.id,
+        role: t.role,
+        parentId: t.parentId,
+        content: t.content,
+        emphasis: t.emphasis,
+      };
+    }
+    graphSnap.turns[responseCardId] = {
+      id: responseCardId,
+      role: 'assistant',
+      parentId: parentTurn.id,
+      content: '',
+      emphasis: 1,
+    };
+
+    const kickoff = buildAutonomousKickoff(
+      projectId,
+      responseCardId,
+      graphSnap.turns,
+    );
+    logEvent('wake.start', {
+      projectId,
+      sessionId: project.sessionId,
+      kickoffChars: kickoff.length,
+      turnCount: allTurns.length,
+    });
+
+    const streamPromise = anthropic.beta.sessions.events.stream(
+      project.sessionId,
+    );
+    await anthropic.beta.sessions.events.send(project.sessionId, {
+      events: [
+        { type: 'user.message', content: [{ type: 'text', text: kickoff }] },
+      ],
+    });
+    const stream = await streamPromise;
+
+    let lastEmitted = '';
+    for await (const event of stream) {
+      if (event.type === 'agent.message' && Array.isArray(event.content)) {
+        const chunk = event.content
+          .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+          .map((b) => b.text)
+          .join('');
+        if (chunk && chunk !== lastEmitted) {
+          lastEmitted = chunk;
+          assistantBuffer += chunk;
+        }
+      }
+      if (event.type === 'agent.tool_use') {
+        toolUses += 1;
+        logEvent('wake.tool_use', { projectId, tool: event.name });
+      }
+      if (event.type === 'span.model_request_end') {
+        const usage = event.usage ?? event.model_usage ?? null;
+        if (usage) {
+          inputTokens += usage.input_tokens ?? 0;
+          outputTokens += usage.output_tokens ?? 0;
+        }
+      }
+      if (event.type === 'agent.custom_tool_use') {
+        customToolUses += 1;
+        logEvent('wake.custom_tool_use', {
+          projectId,
+          tool: event.name,
+          input: event.input ?? null,
+        });
+        // Reuse the same custom-tool dispatch as /api/generate. The block
+        // is large; rather than refactor mid-phase-1, inline the subset
+        // we want autonomous turns to have:
+        //   create_card, create_cards, edit_card, flag_card, link_cards.
+        // create_branch + present_options are intentionally suppressed
+        // (the kickoff already says skip them).
+        let result;
+        if (event.name === 'create_card') {
+          const parentId = event.input?.parent_id;
+          const content = (event.input?.content ?? '').toString();
+          const role =
+            event.input?.role === 'user' ? 'user' : 'assistant';
+          if (!parentId || !graphSnap.turns[parentId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `parent_id ${parentId ?? '(missing)'} not in graph`,
+            });
+          } else if (!content.trim()) {
+            result = JSON.stringify({ ok: false, error: 'content is required' });
+          } else {
+            const newId = makeShapeId();
+            const newTurn = {
+              id: newId,
+              projectId,
+              role,
+              content,
+              parentId,
+              emphasis: 1,
+              streaming: false,
+              meta: {},
+            };
+            db.upsertTurn(newTurn);
+            broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
+            graphSnap.turns[newId] = {
+              id: newId,
+              role,
+              parentId,
+              content,
+              emphasis: 1,
+            };
+            result = JSON.stringify({ ok: true, card_id: newId });
+          }
+        } else if (event.name === 'create_cards') {
+          const cardsIn = Array.isArray(event.input?.cards)
+            ? event.input.cards
+            : [];
+          const ids = [];
+          const errors = [];
+          for (let i = 0; i < cardsIn.length; i++) {
+            const c = cardsIn[i];
+            const parentId = c?.parent_id;
+            const content = (c?.content ?? '').toString();
+            const role = c?.role === 'user' ? 'user' : 'assistant';
+            if (!parentId || !graphSnap.turns[parentId]) {
+              errors.push(`#${i}: parent_id not in graph`);
+              ids.push(null);
+              continue;
+            }
+            if (!content.trim()) {
+              errors.push(`#${i}: content required`);
+              ids.push(null);
+              continue;
+            }
+            const newId = makeShapeId();
+            const newTurn = {
+              id: newId,
+              projectId,
+              role,
+              content,
+              parentId,
+              emphasis: 1,
+              streaming: false,
+              meta: {},
+            };
+            db.upsertTurn(newTurn);
+            broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
+            graphSnap.turns[newId] = {
+              id: newId,
+              role,
+              parentId,
+              content,
+              emphasis: 1,
+            };
+            ids.push(newId);
+          }
+          result = JSON.stringify({
+            ok: errors.length === 0,
+            card_ids: ids,
+            errors: errors.length > 0 ? errors : undefined,
+          });
+        } else if (event.name === 'edit_card') {
+          const cardId = event.input?.card_id;
+          const newContent = (event.input?.content ?? '').toString();
+          const target = graphSnap.turns[cardId];
+          if (!target) {
+            result = JSON.stringify({ ok: false, error: `card_id ${cardId ?? '(missing)'} not in graph` });
+          } else if (target.role !== 'assistant') {
+            result = JSON.stringify({ ok: false, error: 'cannot edit user cards' });
+          } else if (!newContent.trim()) {
+            result = JSON.stringify({ ok: false, error: 'content required' });
+          } else {
+            const editedTurn = {
+              id: cardId,
+              projectId,
+              role: target.role,
+              content: newContent,
+              parentId: target.parentId ?? null,
+              emphasis: target.emphasis ?? 1,
+              streaming: false,
+              meta: target.meta ?? {},
+            };
+            db.upsertTurn(editedTurn);
+            broadcast(projectId, { type: 'turn_upsert', turn: editedTurn });
+            target.content = newContent;
+            result = JSON.stringify({ ok: true });
+          }
+        } else if (event.name === 'flag_card') {
+          const cardId = event.input?.card_id;
+          const reason = (event.input?.reason ?? '').toString().trim();
+          const target = graphSnap.turns[cardId];
+          if (!target) {
+            result = JSON.stringify({ ok: false, error: `card_id ${cardId ?? '(missing)'} not in graph` });
+          } else if (!reason) {
+            result = JSON.stringify({ ok: false, error: 'reason required' });
+          } else {
+            const flaggedTurn = {
+              id: cardId,
+              projectId,
+              role: target.role,
+              content: target.content ?? '',
+              parentId: target.parentId ?? null,
+              emphasis: 2,
+              streaming: false,
+              meta: { ...(target.meta ?? {}), agentFlagReason: reason.slice(0, 240) },
+            };
+            db.upsertTurn(flaggedTurn);
+            broadcast(projectId, { type: 'turn_upsert', turn: flaggedTurn });
+            result = JSON.stringify({ ok: true });
+          }
+        } else if (event.name === 'link_cards') {
+          const fromId = event.input?.from_id;
+          const toId = event.input?.to_id;
+          const kind = (event.input?.kind ?? '').toString().trim().slice(0, 30);
+          if (!fromId || !graphSnap.turns[fromId]) {
+            result = JSON.stringify({ ok: false, error: `from_id ${fromId ?? '(missing)'} not in graph` });
+          } else if (!toId || !graphSnap.turns[toId]) {
+            result = JSON.stringify({ ok: false, error: `to_id ${toId ?? '(missing)'} not in graph` });
+          } else if (fromId === toId) {
+            result = JSON.stringify({ ok: false, error: 'from and to must differ' });
+          } else if (!kind) {
+            result = JSON.stringify({ ok: false, error: 'kind required' });
+          } else {
+            const linkId = makeLinkId();
+            const link = { id: linkId, projectId, fromId, toId, kind };
+            db.addLink(link);
+            broadcast(projectId, { type: 'link_added', link });
+            result = JSON.stringify({ ok: true, link_id: linkId });
+          }
+        } else {
+          // Suppress create_branch / present_options + delegate everything
+          // else to the read-only graph resolvers.
+          if (event.name === 'create_branch' || event.name === 'present_options') {
+            result = JSON.stringify({
+              ok: false,
+              error: `${event.name} is disabled in autonomous mode (no user present)`,
+            });
+          } else {
+            result = resolveGraphTool(event.name, event.input, graphSnap);
+          }
+        }
+        try {
+          await anthropic.beta.sessions.events.send(project.sessionId, {
+            events: [
+              {
+                type: 'user.custom_tool_result',
+                custom_tool_use_id: event.id,
+                content: [{ type: 'text', text: result }],
+              },
+            ],
+          });
+        } catch (err) {
+          console.error('wake: tool_result send failed:', err?.message);
+        }
+        continue;
+      }
+      if (event.type === 'session.status_terminated') break;
+      if (
+        event.type === 'session.status_idle' &&
+        event.stop_reason?.type !== 'requires_action'
+      ) {
+        break;
+      }
+      if (event.type === 'session.error') {
+        logEvent('wake.error', {
+          projectId,
+          message: event.error?.message ?? 'session error',
+        });
+        break;
+      }
+    }
+
+    // Finalize the response card. If the agent wrote nothing meaningful,
+    // delete the empty shell rather than leaving a phantom card.
+    if (assistantBuffer.trim().length === 0) {
+      db.deleteTurn(responseCardId, projectId);
+      broadcast(projectId, {
+        type: 'subtree_deleted',
+        rootId: responseCardId,
+        removed: [responseCardId],
+      });
+    } else {
+      const finalTurn = {
+        id: responseCardId,
+        projectId,
+        role: 'assistant',
+        content: assistantBuffer,
+        parentId: parentTurn.id,
+        emphasis: 1,
+        streaming: false,
+        meta: {},
+      };
+      db.upsertTurn(finalTurn);
+      broadcast(projectId, { type: 'turn_upsert', turn: finalTurn });
+    }
+
+    logEvent('wake.end', {
+      projectId,
+      durationMs: Date.now() - startedAt,
+      responseChars: assistantBuffer.length,
+      toolUses,
+      customToolUses,
+      inputTokens,
+      outputTokens,
+      kept: assistantBuffer.trim().length > 0,
+    });
+
+    res.json({
+      ok: true,
+      responseCardId: assistantBuffer.trim().length > 0 ? responseCardId : null,
+      content: assistantBuffer,
+      toolUses,
+      customToolUses,
+      durationMs: Date.now() - startedAt,
+    });
+  } catch (err) {
+    logEvent('wake.error', {
+      projectId,
+      message: String(err?.message ?? err),
+    });
+    res.status(500).json({ error: String(err?.message ?? err) });
+  } finally {
+    wakeInFlight.delete(projectId);
+  }
+});
+
 async function runOneAgent(agentId, filteredHistory) {
   const agent = AGENTS[agentId];
   if (!agent) return [];

@@ -469,6 +469,30 @@ export async function patchProjectRemote(
   }
 }
 
+/** Trigger an autonomous turn on a project. The agent reads the canvas
+ *  and contributes one useful thing if it sees something — flag, link,
+ *  draft, edit — or ends silently. Mutations land via the WS broadcast
+ *  channel; the caller doesn't need to consume the response shape, just
+ *  watch the canvas update. */
+export async function wakeProject(
+  projectId: string,
+): Promise<{ ok: boolean; content?: string; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/wake`,
+      { method: 'POST' },
+    );
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as { content?: string };
+    return { ok: true, content: data.content };
+  } catch (err) {
+    return { ok: false, error: String((err as Error)?.message ?? err) };
+  }
+}
+
 /** Cascade-delete a project (turns, links, proposals all go). */
 export async function deleteProjectRemote(projectId: string): Promise<void> {
   try {

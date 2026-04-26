@@ -305,15 +305,26 @@ export function App() {
     async (
       userTurnId: TurnId,
       text: string,
-      opts: { skipUserContext?: boolean } = {},
+      opts: { skipUserContext?: boolean; activate?: boolean } = {},
     ) => {
       const editor = editorRef.current;
       const store = useConversation.getState();
       if (!editor || busy) return;
-      const isFromActive = userTurnId === activeId;
+      // `activate` is the explicit override: callers like acceptProposal
+      // want full active-leaf treatment (follow-up input card, camera pan)
+      // even though the user's activeId is still pointing somewhere else
+      // when this runs. Default falls back to the implicit "user is on
+      // this leaf" check used by handleSubmit.
+      const isFromActive = opts.activate ?? userTurnId === activeId;
 
       setBusy(true);
-      if (isFromActive) setInput('');
+      if (isFromActive) {
+        setInput('');
+        // Make activeId reflect this turn so renders during/after the
+        // stream see consistent state (CardActionsContext reads activeId
+        // for the input-card short-circuit, etc).
+        if (activeId !== userTurnId) setActiveId(userTurnId);
+      }
 
       // Commit user text + create assistant child via the store. The syncer
       // will materialize them as tldraw shapes; relayoutAll positions them.
@@ -657,9 +668,15 @@ export function App() {
       setProposals((cur) =>
         cur.filter((x) => x.proposalId !== p.proposalId),
       );
-      // Run the turn directly with the agent's proposed prompt — bypasses
-      // the active-input flow so we don't have to fight setInput timing.
-      void runTurnFrom(newId, p.prompt, { skipUserContext: true });
+      // Treat as if the user is on this new branch: clears input, creates
+      // a follow-up empty user turn after the stream completes, pans the
+      // camera. Without `activate`, runTurnFrom's "is this the active
+      // leaf?" check fails and the new branch ends with the agent's reply
+      // and no input card to continue from.
+      void runTurnFrom(newId, p.prompt, {
+        skipUserContext: true,
+        activate: true,
+      });
     },
     [createBranchUserTurn, runTurnFrom],
   );

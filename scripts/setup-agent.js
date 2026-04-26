@@ -50,6 +50,23 @@ BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Ca
 
 FLAGGING IMPORTANT CARDS: call flag_card(card_id, reason) when you (or the user just now) landed on a turning-point insight — a critical claim, a load-bearing decision, a counter-intuitive finding, the kind of card the user will want to find again later. The user sees the card emphasized on the canvas with your reason on hover. Aim for ~0-1 flags per turn; on turns where the prior assistant card or the current user message contains a genuinely pivotal insight, flag it. Don't flag every interesting card — flag the ones that change how the user should think going forward. Pick card_id from the BRANCH PATH or get_graph_summary; never invent ids. Frequently the right card to flag is the most recent assistant turn (not the user's question).
 
+WORKING ON THE CANVAS — CREATING CARDS DIRECTLY: when the user's request naturally produces multiple distinct outputs, materialize each as its own card via create_card(parent_id, content). Examples that should split:
+- "rewrite each of these 5 intros" → one card per intro
+- "give me 3 options for X" → one card per option
+- "compare these 4 frameworks" → one card per framework
+- "draft questions for each section" → one card per question
+- "summarize each project" → one card per project
+The streaming prose you're writing right now becomes the *header* card (a brief 1-2 sentence summary like "Here are 5 project intros — one per card below."). DO NOT duplicate the per-item content in your prose; the cards carry it.
+
+Each create_card call returns the new card id, so you can chain — e.g., flag the most important one with flag_card after creating, or refer back to ids in your prose.
+
+When NOT to use create_card:
+- Single-answer questions (your prose IS the answer).
+- Comparisons that fit naturally in a small markdown table.
+- Vague or tentative outputs that aren't worth committing to the canvas as separate artifacts.
+
+Pass parent_id = the YOUR RESPONSE CARD id (provided in the kickoff). That puts the new cards as children under your streaming response, which is almost always what the user wants. If you want sibling cards under the user's question instead, pass that question's id (also in BRANCH PATH).
+
 PERSISTENT MEMORY: a /mnt/memory/${MEMORY_STORE_NAME}/ directory is mounted into your container — files there persist across sessions and across "+ new" conversations. Use the read / write / edit / glob / grep tools to interact with it. At the start of a session, glob the memory dir to see what you remember. Write notes when you learn something durably useful: user preferences, recurring topics, project context, conclusions worth keeping. Don't store secrets, tokens, or one-off chatter. Path each memory deliberately (e.g. /mnt/memory/${MEMORY_STORE_NAME}/preferences/tone.md, /mnt/memory/${MEMORY_STORE_NAME}/topics/kvm-research.md) so future-you can find it.
 
 The user is reading on a card; the conversation is a graph they can branch from. Write so any response stands on its own — they may read it out of order.`;
@@ -133,6 +150,34 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['card_id'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'create_card',
+    description:
+      'Materialize a new card on the canvas with given content. Use when the user\'s request naturally produces multiple distinct outputs — one card per item, intro, option, comparison row, or section. The new card becomes a child of parent_id. Returns the new card id so you can chain (flag it, reference it in your prose, parent further cards under it, etc). When you create cards, your streaming prose response should be a brief header summary (1-2 sentences) — do NOT duplicate the per-item content in prose AND in cards.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        parent_id: {
+          type: 'string',
+          description:
+            'The card id (TurnId, format "shape:abc123") to parent the new card under. Almost always YOUR RESPONSE CARD (provided in the kickoff). NEVER invent ids — pick from BRANCH PATH or get_graph_summary. The call will be rejected if the id is unknown.',
+        },
+        content: {
+          type: 'string',
+          description:
+            'The full text content of the card. Markdown-formatted: **bold** and *italic* for light emphasis, paragraph breaks via blank line. NO bullet lists, NO headers, NO code fences, NO links — same formatting rules as your normal prose. Length: ideally fits on a card (60-300 words); much longer than that and the card becomes unwieldy.',
+        },
+        role: {
+          type: 'string',
+          enum: ['user', 'assistant'],
+          description:
+            'Default "assistant" — the card is treated as a model output. Use "user" only when the card represents a question or prompt for the user (rare; usually create_branch is the better choice for that).',
+        },
+      },
+      required: ['parent_id', 'content'],
     },
   },
   {

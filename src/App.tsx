@@ -381,6 +381,7 @@ export function App() {
               graph: buildGraphSnapshot(),
               sessionId: useConversation.getState().projectSessionId,
               pathIds: pathIdsFor(userTurnId),
+              responseCardId: assistantId,
               onSessionId: (id) => {
                 if (
                   useConversation.getState().projectSessionId !== id
@@ -401,6 +402,24 @@ export function App() {
                 useConversation
                   .getState()
                   .setAgentFlag(f.cardId as TurnId, f.reason);
+              },
+              onCardCreated: (c) => {
+                logEvent('client.card_created', {
+                  id: c.id,
+                  parentId: c.parentId,
+                  role: c.role,
+                  contentLen: c.content.length,
+                });
+                // Materialize the agent's card at exactly the server-
+                // generated id so subsequent agent tool calls in this
+                // stream that reference the id (flag_card, further
+                // create_card with this as parent_id) line up.
+                useConversation.getState().createTurn({
+                  id: c.id as TurnId,
+                  role: c.role,
+                  parentId: c.parentId as TurnId,
+                  content: c.content,
+                });
               },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {

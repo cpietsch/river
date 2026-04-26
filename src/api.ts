@@ -102,6 +102,17 @@ export type CardFlag = {
   reason: string;
 };
 
+// Card creation forwarded from the server when the agent calls the
+// `create_card` custom tool. The id is generated server-side and reserved
+// for this card so subsequent agent tool calls in the same stream can
+// reference it. The client materializes a turn at exactly this id.
+export type CardCreation = {
+  id: string;
+  parentId: string;
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
@@ -120,10 +131,12 @@ export async function streamGenerate(
     graph?: GraphSnapshot | null;
     sessionId?: string | null;
     pathIds?: string[];
+    responseCardId?: string | null;
     onSessionId?: (id: string) => void;
     onProposal?: (p: BranchProposal) => void;
     onActivity?: (text: string) => void;
     onCardFlag?: (f: CardFlag) => void;
+    onCardCreated?: (c: CardCreation) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -133,10 +146,12 @@ export async function streamGenerate(
     graph = null,
     sessionId = null,
     pathIds = [],
+    responseCardId = null,
     onSessionId,
     onProposal,
     onActivity,
     onCardFlag,
+    onCardCreated,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -149,6 +164,7 @@ export async function streamGenerate(
       graph,
       sessionId,
       pathIds,
+      responseCardId,
     }),
     signal,
   });
@@ -200,6 +216,18 @@ export async function streamGenerate(
           typeof parsed.reason === 'string'
         ) {
           onCardFlag?.({ cardId: parsed.cardId, reason: parsed.reason });
+        } else if (
+          parsed.type === 'card_created' &&
+          typeof parsed.id === 'string' &&
+          typeof parsed.parentId === 'string' &&
+          typeof parsed.content === 'string'
+        ) {
+          onCardCreated?.({
+            id: parsed.id,
+            parentId: parsed.parentId,
+            role: parsed.role === 'user' ? 'user' : 'assistant',
+            content: parsed.content,
+          });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));
         }

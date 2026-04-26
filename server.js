@@ -217,16 +217,23 @@ function renderBranchPath(pathIds) {
   return `BRANCH PATH (root → leaf, real card ids you can pass to create_branch):\n${chain}`;
 }
 
+function renderResponseCard(responseCardId) {
+  if (!responseCardId || typeof responseCardId !== 'string') return null;
+  return `YOUR RESPONSE CARD: ${responseCardId} (this is the card your prose is streaming into; pass it as parent_id to create_card to put new cards beneath your response)`;
+}
+
 /**
  * Full kickoff for a *fresh* session: priors must be embedded as text since
  * the session has no event history yet. Used on the first turn of a canvas
  * (or after the session is lost / re-minted). Includes BRANCH PATH so the
  * agent has card ids available without calling get_graph_summary first.
  */
-function buildFullKickoff(history, input, emphasized, userContext, pathIds) {
+function buildFullKickoff(history, input, emphasized, userContext, pathIds, responseCardId) {
   const parts = [];
   const branchPath = renderBranchPath(pathIds);
   if (branchPath) parts.push(branchPath);
+  const respCard = renderResponseCard(responseCardId);
+  if (respCard) parts.push(respCard);
   parts.push(...renderConstraintsAndContext(emphasized, userContext));
   const priors = (Array.isArray(history) ? history : []).filter(
     (m) =>
@@ -256,10 +263,12 @@ function buildFullKickoff(history, input, emphasized, userContext, pathIds) {
  * for the agent to (a) know which branch is active and (b) honor any
  * priority constraints / chip context that arrived this turn.
  */
-function buildSkinnyKickoff(pathIds, input, emphasized, userContext) {
+function buildSkinnyKickoff(pathIds, input, emphasized, userContext, responseCardId) {
   const parts = [];
   const branchPath = renderBranchPath(pathIds);
   if (branchPath) parts.push(branchPath);
+  const respCard = renderResponseCard(responseCardId);
+  if (respCard) parts.push(respCard);
   parts.push(...renderConstraintsAndContext(emphasized, userContext));
   parts.push(`USER: ${input.trim()}`);
   return parts.join('\n\n---\n\n');
@@ -273,6 +282,17 @@ function buildSkinnyKickoff(pathIds, input, emphasized, userContext) {
 // Plain-language description of a tool call, shown to the user in the
 // streaming card so the wait feels purposeful. Trim long inputs so a
 // pasted URL or shell command doesn't blow out the layout.
+// Generate a tldraw-compatible shape id. Same shape as createShapeId() —
+// "shape:" + a random alphanumeric body. Used server-side when the agent
+// calls create_card: we generate the id, tell the client to materialize a
+// turn with that id, and return it to the agent so it can chain.
+function makeShapeId() {
+  const a = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  let body = '';
+  for (let i = 0; i < 21; i++) body += a[Math.floor(Math.random() * a.length)];
+  return `shape:${body}`;
+}
+
 function describeTool(name, input) {
   const trim = (s, n = 70) => {
     const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -319,6 +339,8 @@ function describeTool(name, input) {
       return 'proposing a branch';
     case 'flag_card':
       return 'flagging an important card';
+    case 'create_card':
+      return 'creating a card on the canvas';
     default:
       return `using ${name}`;
   }
@@ -364,6 +386,7 @@ app.post('/api/generate', async (req, res) => {
     graph = null,
     sessionId: incomingSessionId = null,
     pathIds = [],
+    responseCardId = null,
   } = req.body ?? {};
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
@@ -383,8 +406,8 @@ app.post('/api/generate', async (req, res) => {
   // conversation), full when we're about to mint a fresh session.
   const buildKickoff = () =>
     incomingSessionId
-      ? buildSkinnyKickoff(pathIds, input, emphasized, userContext)
-      : buildFullKickoff(history, input, emphasized, userContext, pathIds);
+      ? buildSkinnyKickoff(pathIds, input, emphasized, userContext, responseCardId)
+      : buildFullKickoff(history, input, emphasized, userContext, pathIds, responseCardId);
   let text = buildKickoff();
   const startedAt = Date.now();
   logEvent('generate.start', {
@@ -396,6 +419,25 @@ app.post('/api/generate', async (req, res) => {
     sessionReused: !!incomingSessionId,
     kickoffChars: text.length,
   });
+
+  // Inject the responseCardId into the graph snapshot so create_card /
+  // flag_card calls that pass it as parent_id pass validation. The client
+  // omits streaming turns from buildGraphSnapshot, so without this the
+  // agent's own response card wouldn't be a valid parent. parentId of the
+  // response card is the last id in pathIds (the user turn that triggered
+  // this response).
+  if (responseCardId && graph?.turns && !graph.turns[responseCardId]) {
+    const userId = Array.isArray(pathIds) && pathIds.length > 0
+      ? pathIds[pathIds.length - 1]
+      : null;
+    graph.turns[responseCardId] = {
+      id: responseCardId,
+      role: 'assistant',
+      parentId: userId,
+      content: '',
+      emphasis: 1,
+    };
+  }
 
   let sessionId = incomingSessionId;
   let totalChars = 0;
@@ -464,7 +506,7 @@ app.post('/api/generate', async (req, res) => {
       }
       const created = await anthropic.beta.sessions.create(sessionParams);
       sessionId = created.id;
-      text = buildFullKickoff(history, input, emphasized, userContext, pathIds);
+      text = buildFullKickoff(history, input, emphasized, userContext, pathIds, responseCardId);
       res.write(
         `data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`,
       );
@@ -535,7 +577,53 @@ app.post('/api/generate', async (req, res) => {
           input: event.input ?? null,
         });
         let result;
-        if (event.name === 'flag_card') {
+        if (event.name === 'create_card') {
+          // Agent-driven card creation: generate the new id server-side,
+          // forward to the client as an SSE event so the store materializes
+          // a turn at exactly that id, and ACK the agent with the id so it
+          // can chain (flag it, reference in prose, parent further cards
+          // under it, etc).
+          const parentId = event.input?.parent_id;
+          const content = (event.input?.content ?? '').toString();
+          const role = event.input?.role === 'user' ? 'user' : 'assistant';
+          const turns = graph?.turns ?? {};
+          if (!parentId || !turns[parentId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `parent_id ${parentId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (!content.trim()) {
+            result = JSON.stringify({ ok: false, error: 'content is required' });
+          } else {
+            const newId = makeShapeId();
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'card_created',
+                id: newId,
+                parentId,
+                role,
+                content: content.slice(0, 8000),
+              })}\n\n`,
+            );
+            // Optimistically extend the in-flight graph snapshot so any
+            // subsequent create_card / flag_card calls in this same stream
+            // can reference the just-created id.
+            if (graph && graph.turns) {
+              graph.turns[newId] = {
+                id: newId,
+                role,
+                parentId,
+                content,
+                emphasis: 1,
+              };
+            }
+            result = JSON.stringify({
+              ok: true,
+              card_id: newId,
+              status: `card created and shown to user (id: ${newId})`,
+            });
+          }
+        } else if (event.name === 'flag_card') {
           // flag_card: forward to the client as an SSE event the UI applies
           // to the store (sets emphasis=2 + records the reason). ACK the
           // agent immediately so it can keep going.

@@ -48,8 +48,21 @@ export interface Turn {
   meta: TurnMeta;
 }
 
+// Lateral relationship between two cards beyond parent → child. Created
+// by the agent via the link_cards custom tool. Renders as a dashed arrow
+// on the canvas so the user can see latent structure (this card answers
+// that question, this contradicts that decision, this elaborates that
+// claim). Layout ignores links — they're a visualization concern only.
+export interface Link {
+  id: string; // unique link id (link_xxx)
+  fromId: TurnId;
+  toId: TurnId;
+  kind: string; // free-form short label: "answers", "contradicts", "elaborates", etc
+}
+
 // The full conversation graph: many turns connected by parent pointers,
 // possibly multiple roots (one per "+ new"-d session). Indexed by id.
 export interface ConversationGraph {
   turns: Record<TurnId, Turn>;
+  links: Link[];
 }

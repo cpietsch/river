@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { createShapeId } from 'tldraw';
 import type { AgentPrediction, BranchProposal, ChipSpan } from '../api';
-import type { Turn, TurnId, TurnMeta, TurnRole } from './types';
+import type { Link, Turn, TurnId, TurnMeta, TurnRole } from './types';
 
 interface NewTurnInit {
   id?: TurnId;
@@ -48,6 +48,10 @@ interface ConversationStore {
   // alongside the active canvas so reloads don't lose them. Cleared on
   // accept / dismiss / canvas switch / + new.
   proposals: BranchProposal[];
+  // Lateral connections the agent has drawn between cards via link_cards.
+  // Rendered as dashed arrows on the canvas. Persisted with turns so the
+  // visualization survives reloads and project switches.
+  links: Link[];
 
   // Mutations — active canvas
   setProjectSessionId: (id: string | null) => void;
@@ -56,6 +60,9 @@ interface ConversationStore {
   removeProposal: (proposalId: string) => void;
   clearProposals: () => void;
   pruneStaleProposals: () => void; // drops proposals whose parentId no longer exists
+  addLink: (link: Link) => void;
+  removeLink: (linkId: string) => void;
+  pruneStaleLinks: () => void; // drops links whose endpoints no longer exist
   createTurn: (init: NewTurnInit) => TurnId;
   setContent: (
     id: TurnId,
@@ -118,6 +125,7 @@ export const useConversation = create<ConversationStore>()(
   archive: [],
   activity: null,
   proposals: [],
+  links: [],
 
   setProjectSessionId: (id) => set({ projectSessionId: id }),
   setActivity: (entry) => set({ activity: entry }),
@@ -143,6 +151,29 @@ export const useConversation = create<ConversationStore>()(
     set((s) => ({
       proposals: s.proposals.filter(
         (p) => !!s.turns[p.parentId as TurnId],
+      ),
+    })),
+
+  addLink: (link) =>
+    set((s) => {
+      // Drop duplicates (same from/to pair) — re-firing should replace,
+      // not stack. Also dedupe by exact id in case the server retries.
+      const filtered = s.links.filter(
+        (l) =>
+          l.id !== link.id &&
+          !(l.fromId === link.fromId && l.toId === link.toId),
+      );
+      return { links: [...filtered, link].slice(-50) };
+    }),
+
+  removeLink: (linkId) =>
+    set((s) => ({ links: s.links.filter((l) => l.id !== linkId) })),
+
+  pruneStaleLinks: () =>
+    set((s) => ({
+      links: s.links.filter(
+        (l) =>
+          !!s.turns[l.fromId as TurnId] && !!s.turns[l.toId as TurnId],
       ),
     })),
 
@@ -332,12 +363,22 @@ export const useConversation = create<ConversationStore>()(
     set((s) => {
       const next = { ...s.turns };
       for (const id of toRemove) delete next[id];
-      return { turns: next };
+      // Drop links + proposals whose endpoints fell with the subtree.
+      const links = s.links.filter(
+        (l) =>
+          !toRemove.has(l.fromId as TurnId) &&
+          !toRemove.has(l.toId as TurnId),
+      );
+      const proposals = s.proposals.filter(
+        (p) => !toRemove.has(p.parentId as TurnId),
+      );
+      return { turns: next, links, proposals };
     });
     return Array.from(toRemove);
   },
 
-  reset: () => set({ turns: {}, projectSessionId: null, proposals: [] }),
+  reset: () =>
+    set({ turns: {}, projectSessionId: null, proposals: [], links: [] }),
 
   // Stash the active canvas onto the archive list and clear active state. No
   // session deletion — the user may resume this project later. Empty active
@@ -366,6 +407,7 @@ export const useConversation = create<ConversationStore>()(
         projectSessionId: null,
         archive: nextArchive,
         proposals: [],
+        links: [],
       };
     });
   },
@@ -398,10 +440,12 @@ export const useConversation = create<ConversationStore>()(
       turns: target.turns,
       projectSessionId: target.sessionId,
       archive: nextArchive,
-      // Different canvas → different proposal set. Resumed projects don't
-      // currently carry their old proposals (proposals were ephemeral
-      // before this commit; archived projects predate persistence).
+      // Different canvas → different proposal + link sets. Resumed
+      // projects don't currently carry their proposals or links; archived
+      // projects predate that persistence. (Future: include both in the
+      // ArchivedProject snapshot if it becomes worth carrying across.)
       proposals: [],
+      links: [],
     });
     return true;
   },
@@ -470,6 +514,7 @@ export const useConversation = create<ConversationStore>()(
         projectSessionId: state.projectSessionId,
         archive: state.archive,
         proposals: state.proposals,
+        links: state.links,
       }),
     },
   ),

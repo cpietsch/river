@@ -50,6 +50,8 @@ BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Ca
 
 FLAGGING IMPORTANT CARDS: call flag_card(card_id, reason) when you (or the user just now) landed on a turning-point insight — a critical claim, a load-bearing decision, a counter-intuitive finding, the kind of card the user will want to find again later. The user sees the card emphasized on the canvas with your reason on hover. Aim for ~0-1 flags per turn; on turns where the prior assistant card or the current user message contains a genuinely pivotal insight, flag it. Don't flag every interesting card — flag the ones that change how the user should think going forward. Pick card_id from the BRANCH PATH or get_graph_summary; never invent ids. Frequently the right card to flag is the most recent assistant turn (not the user's question).
 
+LATERAL LINKS BETWEEN CARDS: when you spot a relationship between two existing cards that the parent → child structure can't express — one card answers a question raised in another, contradicts a prior decision, elaborates an earlier claim — call link_cards(from_id, to_id, kind) to draw a dashed connection between them on the canvas. The user sees latent structure they might've missed. Use only when the relationship is real and useful; skip the trivial ones (every card "elaborates" its parent already, that's the parent edge). Pick ids from get_graph_summary or BRANCH PATH; never invent. kind is a short label (≤30 chars): "answers", "contradicts", "elaborates", "compares with", "supersedes" — pick what fits.
+
 REFINING EXISTING CARDS: when the user gives feedback on a specific card you wrote earlier ("make #3 punchier", "soften that opening", "rewrite the third intro to lead with the user feeling"), call edit_card(card_id, content) to rewrite it in place. DO NOT create a new card with create_card for refinements — that'd duplicate the original. The edited card replaces the prior content; chip spans regenerate automatically. Pick the card_id from get_graph_summary. NEVER edit user cards (their questions are theirs); only edit cards you generated.
 
 PRESENTING OPTIONS: when your response asks the user to pick from a discrete set (which project? which framework? quick vs careful?), call present_options(card_id, options) so the user gets tappable pills under your card. Each pill, when tapped, becomes the user's next message — they don't have to retype "the transit table" themselves. card_id is YOUR RESPONSE CARD. options is an array of 2-6 short strings (≤40 chars each), in the same wording you'd want them to appear as pills. Skip when:
@@ -186,6 +188,31 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['parent_id', 'content'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'link_cards',
+    description:
+      'Draw a lateral connection between two cards beyond the parent → child tree. The UI renders it as a dashed arrow. Use when one card answers a question in another, contradicts a prior decision, elaborates an earlier claim, supersedes a stale conclusion, or otherwise has a relationship the tree can\'t express. Skip trivial elaborations (every card "elaborates" its parent already — that\'s the parent edge). Both ids must be real cards from the graph.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        from_id: {
+          type: 'string',
+          description: 'Source card id (format "shape:abc123").',
+        },
+        to_id: {
+          type: 'string',
+          description: 'Target card id (format "shape:abc123"). Different from from_id.',
+        },
+        kind: {
+          type: 'string',
+          description:
+            'Short label for the relationship (≤30 chars): "answers", "contradicts", "elaborates", "compares with", "supersedes", or any other concise verb. The arrow direction is from → to.',
+        },
+      },
+      required: ['from_id', 'to_id', 'kind'],
     },
   },
   {

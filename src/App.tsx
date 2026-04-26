@@ -297,11 +297,12 @@ export function App() {
 
   // Initial fill on mount: any persisted-but-unlabeled cards get titled in
   // the background while the user catches their breath. Also drop any
-  // persisted branch proposals whose parent card no longer exists (deleted
-  // out from under them while the canvas was closed).
+  // persisted branch proposals + links whose endpoints no longer exist
+  // (deleted out from under them while the canvas was closed).
   useEffect(() => {
     void refreshLabels();
     useConversation.getState().pruneStaleProposals();
+    useConversation.getState().pruneStaleLinks();
   }, [refreshLabels]);
 
   const runTurnFrom = useCallback(
@@ -472,6 +473,20 @@ export function App() {
                 useConversation
                   .getState()
                   .setChipSpans(e.cardId as TurnId, fresh);
+              },
+              onCardLinked: (l) => {
+                logEvent('client.card_linked', {
+                  linkId: l.linkId,
+                  fromId: l.fromId,
+                  toId: l.toId,
+                  kind: l.kind,
+                });
+                useConversation.getState().addLink({
+                  id: l.linkId,
+                  fromId: l.fromId as TurnId,
+                  toId: l.toId as TurnId,
+                  kind: l.kind,
+                });
               },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {

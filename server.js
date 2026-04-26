@@ -245,6 +245,13 @@ function makeShapeId() {
   return `shape:${body}`;
 }
 
+function makeLinkId() {
+  const a = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let body = '';
+  for (let i = 0; i < 12; i++) body += a[Math.floor(Math.random() * a.length)];
+  return `link_${body}`;
+}
+
 function describeTool(name, input) {
   const trim = (s, n = 70) => {
     const t = String(s ?? '').replace(/\s+/g, ' ').trim();
@@ -297,6 +304,8 @@ function describeTool(name, input) {
       return 'presenting choices for you to pick from';
     case 'edit_card':
       return 'refining an earlier card';
+    case 'link_cards':
+      return 'linking two cards on the canvas';
     default:
       return `using ${name}`;
   }
@@ -533,7 +542,53 @@ app.post('/api/generate', async (req, res) => {
           input: event.input ?? null,
         });
         let result;
-        if (event.name === 'edit_card') {
+        if (event.name === 'link_cards') {
+          // Lateral connection between two cards. Validate both endpoints
+          // exist + differ; generate a link id; forward as SSE so the
+          // client materializes a Link in the store + the syncer renders
+          // a dashed arrow.
+          const fromId = event.input?.from_id;
+          const toId = event.input?.to_id;
+          const kind = (event.input?.kind ?? '').toString().trim().slice(0, 30);
+          const turns = graph?.turns ?? {};
+          if (!fromId || !turns[fromId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `from_id ${fromId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (!toId || !turns[toId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `to_id ${toId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (fromId === toId) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'from_id and to_id must differ — cards cannot link to themselves',
+            });
+          } else if (!kind) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'kind is required (short label like "answers", "contradicts")',
+            });
+          } else {
+            const linkId = makeLinkId();
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'card_linked',
+                linkId,
+                fromId,
+                toId,
+                kind,
+              })}\n\n`,
+            );
+            result = JSON.stringify({
+              ok: true,
+              link_id: linkId,
+              status: `link drawn from ${fromId} to ${toId} (${kind})`,
+            });
+          }
+        } else if (event.name === 'edit_card') {
           // Rewrite an existing card in place. Validate the id exists in
           // the graph and that it's an assistant card (user cards are
           // off-limits — their questions belong to the user). Forward

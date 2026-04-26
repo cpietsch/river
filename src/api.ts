@@ -108,6 +108,16 @@ export type CardEdit = {
   content: string;
 };
 
+// Lateral link between two cards forwarded from the server when the
+// agent calls link_cards. The client materializes a Link record in the
+// store; the syncer renders a dashed arrow on the canvas.
+export type CardLink = {
+  linkId: string;
+  fromId: string;
+  toId: string;
+  kind: string;
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
@@ -134,6 +144,7 @@ export async function streamGenerate(
     onCardCreated?: (c: CardCreation) => void;
     onCardOptions?: (o: CardOptions) => void;
     onCardEdited?: (e: CardEdit) => void;
+    onCardLinked?: (l: CardLink) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -151,6 +162,7 @@ export async function streamGenerate(
     onCardCreated,
     onCardOptions,
     onCardEdited,
+    onCardLinked,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -246,6 +258,19 @@ export async function streamGenerate(
           onCardEdited?.({
             cardId: parsed.cardId,
             content: parsed.content,
+          });
+        } else if (
+          parsed.type === 'card_linked' &&
+          typeof parsed.linkId === 'string' &&
+          typeof parsed.fromId === 'string' &&
+          typeof parsed.toId === 'string' &&
+          typeof parsed.kind === 'string'
+        ) {
+          onCardLinked?.({
+            linkId: parsed.linkId,
+            fromId: parsed.fromId,
+            toId: parsed.toId,
+            kind: parsed.kind,
           });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));

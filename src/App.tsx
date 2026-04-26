@@ -1926,9 +1926,14 @@ function BranchPlusButtonOverlay({
         borderRadius: 999,
         color: hover ? '#111' : '#777',
         cursor: 'pointer',
-        display: 'inline-flex',
+        display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
+        // Zero line-height + font-size so the button's text baseline doesn't
+        // push the flex-centered SVG up by ~1.5px. Without this the + sign
+        // sits visibly above the circle's true center.
+        lineHeight: 0,
+        fontSize: 0,
         boxShadow: hover ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
         transition: 'color 120ms, border-color 120ms, box-shadow 120ms',
         WebkitTapHighlightColor: 'transparent',

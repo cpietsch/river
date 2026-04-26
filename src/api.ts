@@ -232,6 +232,32 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+// Live agent + environment metadata, shown in the projects menu footer.
+export type AgentInfo = {
+  agentId: string | null;
+  agentVersion: number | null;
+  model: string | null;
+  envId: string | null;
+  memoryStoreId: string | null;
+};
+
+export async function fetchInfo(): Promise<AgentInfo | null> {
+  try {
+    const res = await fetch('/api/info');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      agentId: data.agentId ?? null,
+      agentVersion: typeof data.agentVersion === 'number' ? data.agentVersion : null,
+      model: data.model ?? null,
+      envId: data.envId ?? null,
+      memoryStoreId: data.memoryStoreId ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Inspect the agent's persistent memory store. Returns a `{path: content}`
  * map of every file the agent has written under `/mnt/memory/`. Slow —

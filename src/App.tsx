@@ -17,10 +17,12 @@ import { CardActionsContext } from './CardActions';
 import {
   deleteSession,
   fetchAgentPredictions,
+  fetchInfo,
   fetchLabels,
   fetchMemory,
   logEvent,
   streamGenerate,
+  type AgentInfo,
   type ChatMessage,
   type AgentPrediction,
   type BranchProposal,
@@ -69,7 +71,17 @@ export function App() {
     null,
   );
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const labelInFlightRef = useRef(false);
+
+  // Fetch agent + env identifiers once on mount; surfaced in the projects
+  // menu footer (version, model, session id). Refreshed on demand if the
+  // user resets / archives — for now, mount-only is enough.
+  useEffect(() => {
+    void fetchInfo().then((info) => {
+      if (info) setAgentInfo(info);
+    });
+  }, []);
   const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
   const archivedProjects = useConversation((s) => s.archive);
   const activeSessionId = useConversation((s) => s.projectSessionId);
@@ -1052,6 +1064,7 @@ export function App() {
             <ProjectsMenu
               activeName={activeProjectName}
               activeSessionId={activeSessionId}
+              info={agentInfo}
               archive={archivedProjects}
               onClose={() => setProjectsOpen(false)}
               onNew={() => {
@@ -1629,6 +1642,7 @@ function ProposalsPanel({
 function ProjectsMenu({
   activeName,
   activeSessionId,
+  info,
   archive,
   onClose,
   onNew,
@@ -1639,6 +1653,7 @@ function ProjectsMenu({
 }: {
   activeName: string;
   activeSessionId: string | null;
+  info: AgentInfo | null;
   archive: import('./graph/store').ArchivedProject[];
   onClose: () => void;
   onNew: () => void;
@@ -1949,9 +1964,98 @@ function ProjectsMenu({
             </div>
           ))
         )}
+
+        {/* Footer: agent + session identifiers (version, model, sesn id).
+            Click to copy the session id to clipboard. */}
+        <div
+          style={{
+            marginTop: 6,
+            paddingTop: 8,
+            paddingBottom: 4,
+            borderTop: '1px solid #eeedea',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 11,
+            color: '#9a9590',
+            fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+            paddingLeft: 10,
+            paddingRight: 10,
+          }}
+        >
+          <span title="agent version">
+            {info?.agentVersion != null ? `v${info.agentVersion}` : 'v?'}
+          </span>
+          <span aria-hidden style={{ opacity: 0.4 }}>·</span>
+          <span
+            title={`model: ${info?.model ?? 'unknown'}`}
+            style={{
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {info?.model ? shortenModel(info.model) : 'no model'}
+          </span>
+          <span aria-hidden style={{ opacity: 0.4 }}>·</span>
+          <button
+            type="button"
+            disabled={!activeSessionId}
+            onClick={() => {
+              if (!activeSessionId) return;
+              void navigator.clipboard?.writeText(activeSessionId);
+            }}
+            title={
+              activeSessionId
+                ? `${activeSessionId} (click to copy)`
+                : 'no session yet — first turn mints one'
+            }
+            style={{
+              flex: '1 1 auto',
+              minWidth: 0,
+              border: 'none',
+              background: 'none',
+              padding: 0,
+              font: 'inherit',
+              color: activeSessionId ? '#9a9590' : '#cccccc',
+              cursor: activeSessionId ? 'pointer' : 'default',
+              textAlign: 'left',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              WebkitTapHighlightColor: 'transparent',
+            }}
+            onMouseEnter={(e) => {
+              if (activeSessionId) e.currentTarget.style.color = '#1a1a1a';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = activeSessionId ? '#9a9590' : '#cccccc';
+            }}
+          >
+            {activeSessionId ? shortenSessionId(activeSessionId) : 'no session'}
+          </button>
+        </div>
       </div>
     </>
   );
+}
+
+// Pretty-print "claude-opus-4-7" → "opus 4.7" for the menu footer. Falls
+// back to the raw string for unknown shapes (so we don't accidentally
+// hide info).
+function shortenModel(model: string): string {
+  const m = model.match(/^claude-([a-z]+)-(\d+)-(\d+)$/i);
+  if (m) return `${m[1].toLowerCase()} ${m[2]}.${m[3]}`;
+  return model;
+}
+
+// "sesn_011CaRyjgZKo96xnnMqpYHDq" → "sesn_…YHDq" so it fits on one line
+// in the footer while still showing enough characters to be visually
+// distinguishable across canvases.
+function shortenSessionId(id: string): string {
+  const tail = id.slice(-6);
+  const head = id.split('_')[0];
+  return `${head}_…${tail}`;
 }
 
 /* ─── Map menu (spatial mini-map) ─── */

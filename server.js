@@ -1002,6 +1002,49 @@ app.post('/api/log', (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Live agent + environment info, surfaced in the projects menu footer.
+ * Pulls the current agent's version + model from Anthropic so the UI can
+ * show "v10 · opus 4.7 · sesn_…" without baking a stale value into the
+ * client. Cached briefly on the client; ~once-per-mount fetch.
+ */
+app.get('/api/info', async (req, res) => {
+  if (!AGENT_ID) {
+    res.json({
+      agentId: null,
+      agentVersion: null,
+      model: null,
+      envId: ENV_ID ?? null,
+      memoryStoreId: MEMORY_STORE_ID ?? null,
+    });
+    return;
+  }
+  try {
+    const agent = await anthropic.beta.agents.retrieve(AGENT_ID);
+    // model can be a bare string or {id, speed} object — normalize.
+    const modelStr =
+      typeof agent.model === 'string'
+        ? agent.model
+        : agent.model?.id ?? null;
+    res.json({
+      agentId: agent.id,
+      agentVersion: agent.version ?? null,
+      model: modelStr,
+      envId: ENV_ID ?? null,
+      memoryStoreId: MEMORY_STORE_ID ?? null,
+    });
+  } catch (err) {
+    res.json({
+      agentId: AGENT_ID,
+      agentVersion: null,
+      model: null,
+      envId: ENV_ID ?? null,
+      memoryStoreId: MEMORY_STORE_ID ?? null,
+      error: String(err?.message ?? err),
+    });
+  }
+});
+
 app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }));
 
 app.listen(PORT, () => {

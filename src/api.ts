@@ -304,7 +304,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
-// ── Server-side canvas state (Phase 0) ─────────────────────────────────
+// ── Server-side canvas state  ─────────────────────────────────
 
 export type ServerProject = {
   id: string;
@@ -386,13 +386,13 @@ export async function fetchProjectState(
   }
 }
 
-// ── Per-mutation client → server sync (Phase 0c.2) ─────────────────────
+// ── Per-mutation client → server sync  ─────────────────────
 //
 // Each user-side mutation (toggleEmphasis, deleteCard, dismissProposal,
 // archive operations, …) is mirrored to the server via these fire-and-
 // forget POSTs. Errors are swallowed: the local zustand store is the
 // optimistic source of truth; the server is the durable copy that other
-// devices and the background worker (Phase 1) read from.
+// devices and the background worker  read from.
 
 /** Upsert one turn server-side. Used after createTurn, setEmphasis,
  *  setContent (when content stops streaming), branchFrom, etc. No-op
@@ -524,38 +524,6 @@ export async function deleteProjectRemote(projectId: string | null): Promise<voi
   }
 }
 
-/** One-shot migration: push the client's existing localStorage shape up
- *  to the server. Idempotent — projects that already exist server-side
- *  are skipped. */
-export async function migrateLocalState(payload: {
-  active?: {
-    id: string;
-    name?: string;
-    sessionId?: string | null;
-    turns: Record<string, unknown>;
-    links?: unknown[];
-    proposals?: unknown[];
-  };
-  archive?: Array<{
-    id: string;
-    name: string;
-    sessionId: string | null;
-    turns: Record<string, unknown>;
-  }>;
-}): Promise<{ created: string[]; skipped: string[] }> {
-  try {
-    const res = await fetch('/api/migrate', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) return { created: [], skipped: [] };
-    return (await res.json()) as { created: string[]; skipped: string[] };
-  } catch {
-    return { created: [], skipped: [] };
-  }
-}
-
 // Live agent + environment metadata, shown in the projects menu footer.
 export type AgentInfo = {
   agentId: string | null;
@@ -579,33 +547,6 @@ export async function fetchInfo(): Promise<AgentInfo | null> {
     };
   } catch {
     return null;
-  }
-}
-
-/**
- * Inspect the agent's persistent memory store. Returns a `{path: content}`
- * map of every file the agent has written under `/mnt/memory/`. Slow —
- * the server spins up a throwaway session to read the store, so expect
- * 5-15 seconds. Empty `files` object means the agent hasn't written
- * anything yet (or memory isn't configured).
- */
-export async function fetchMemory(): Promise<{
-  files: Record<string, string>;
-  configured: boolean;
-}> {
-  try {
-    const res = await fetch('/api/memory');
-    if (!res.ok) return { files: {}, configured: false };
-    const data = (await res.json()) as {
-      files?: Record<string, string>;
-      configured?: boolean;
-    };
-    return {
-      files: data.files ?? {},
-      configured: data.configured ?? false,
-    };
-  } catch {
-    return { files: {}, configured: false };
   }
 }
 

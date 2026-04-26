@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tldraw,
-  toRichText,
   EASINGS,
   type Editor,
-  type TLShapeId,
   type TLComponents,
 } from 'tldraw';
 import {
@@ -340,22 +338,11 @@ export function App() {
     useConversation.getState().pruneStaleLinks();
   }, [refreshLabels]);
 
-  // Phase 0c: server-side canvas sync on mount. Two phases:
-  //   1. If the server doesn't yet know about this project (and any
-  //      archived projects), POST /api/migrate to seed it from the
-  //      client's persisted localStorage state.
-  //   2. Fetch the active project's canonical state from the server and
-  //      merge it into the local store (server wins on overlap; local-
-  //      only turns survive). This is how the user sees agent mutations
-  //      that happened while they were closed (or in another tab once
-  //      Phase 0d adds WebSocket broadcasts).
-  // Phase 0d: WebSocket subscription to the active project's channel. The
-  // server broadcasts every mutation it persists — agent-emitted (via
+  // WebSocket subscription to the active project's channel. The server
+  // broadcasts every mutation it persists — agent-emitted (via
   // /api/generate's tool resolvers) and user-emitted (via the per-mutation
-  // endpoints). Other tabs / devices / the future background worker push
+  // endpoints). Other tabs / devices and the autonomous wake worker push
   // changes through this channel and the local store catches them up.
-  // (activeProjectIdSelRaw is already pulled above; reuse for the WS
-  // subscription effect.)
   useEffect(() => {
     const projectId = activeProjectIdSelRaw;
     if (!projectId) return;
@@ -1311,7 +1298,7 @@ export function App() {
     logEvent('client.reset_session', { sessionId: cur });
   }, []);
 
-  // Phase 1: ask the agent to take an autonomous turn on the active
+  // ask the agent to take an autonomous turn on the active
   // project. Useful as a manual trigger before the cron loop ships;
   // every mutation flows through the WS channel so the canvas updates
   // live as the agent works.
@@ -2912,8 +2899,3 @@ function repositionChain(editor: Editor, sourceId: TurnId): void {
   repositionCardLabels(editor);
 }
 
-// `toRichText` and `TLShapeId` are still used by sync/edge creation —
-// re-export so unused imports don't trip TS strict mode if logic shifts.
-export type { TLShapeId };
-const _keepImports = toRichText;
-void _keepImports;

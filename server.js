@@ -373,12 +373,9 @@ app.post('/api/generate', async (req, res) => {
     responseCardId = null,
   } = req.body ?? {};
 
-  // Phase 0b: lazily ensure the project row exists server-side so
+  // lazily ensure the project row exists server-side so
   // subsequent agent mutations (create_card / edit_card / flag_card /
-  // link_cards / create_branch) can be persisted to the DB. Existing
-  // canvases that pre-date this branch will get their server row
-  // bootstrapped here on next turn; their pre-existing turns won't be
-  // backfilled (use POST /api/migrate for that).
+  // link_cards / create_branch) can be persisted to the DB.
   if (projectId && !db.getProject(projectId)) {
     try {
       db.createProject({
@@ -523,7 +520,7 @@ app.post('/api/generate', async (req, res) => {
     }
     // Mirror the session id onto the project row so DB-side state matches
     // what the client knows. (Server-side workers will need this to reach
-    // the right session in Phase 1.)
+    // the right session after the autonomous-wake refactor.)
     if (projectId && db.getProject(projectId)) {
       db.setProjectSession(projectId, sessionId);
     }
@@ -597,7 +594,7 @@ app.post('/api/generate', async (req, res) => {
           lastEmitted = chunk;
           totalChars = chunk.length;
           // Accumulate so we can persist the final assistant content to
-          // DB on stream end (Phase 0b/c — server now mirrors the canvas).
+          // DB on stream end (server now mirrors the canvas).
           assistantBuffer += chunk;
         }
       }
@@ -1281,7 +1278,7 @@ app.delete('/api/session/:id', async (req, res) => {
   }
 });
 
-// ───────────────────── Phase 1: autonomous turns (wake) ─────────────────
+// ───────────────────── autonomous turns (wake) ─────────────────
 //
 // POST /api/projects/:id/wake fires a turn at a project's persistent
 // session WITHOUT a user message. The agent reviews the canvas + memory
@@ -2014,10 +2011,10 @@ app.get('/api/info', async (req, res) => {
 
 // ───────────────────── Projects + canvas state API ─────────────────────
 //
-// Phase 0: server is now the source of truth for the canvas. Each project
+// server is now the source of truth for the canvas. Each project
 // holds turns, links, and pending proposals; the agent's session id lives
 // on the project row. Clients fetch on mount, write through the mutation
-// endpoints, and (Phase 0b) subscribe to a per-project WebSocket for
+// endpoints, and  subscribe to a per-project WebSocket for
 // live updates.
 
 app.get('/api/projects', (_req, res) => {
@@ -2241,67 +2238,15 @@ app.delete('/api/projects/:id/proposals/:proposalId', (req, res) => {
 //                links: Link[], proposals: BranchProposal[] },
 //     archive?: ArchivedProject[]   // each {id, name, sessionId, turns}
 //   }
-app.post('/api/migrate', (req, res) => {
-  const { active, archive = [] } = req.body ?? {};
-  const created = [];
-  const skipped = [];
-  const seedProject = (p) => {
-    if (!p?.id || db.getProject(p.id)) {
-      skipped.push(p?.id);
-      return;
-    }
-    db.createProject({
-      id: p.id,
-      name: p.name ?? 'untitled canvas',
-      sessionId: p.sessionId ?? null,
-    });
-    for (const turn of Object.values(p.turns ?? {})) {
-      db.upsertTurn({
-        ...turn,
-        projectId: p.id,
-        createdAt: turn.createdAt ?? Date.now(),
-      });
-    }
-    for (const link of p.links ?? []) {
-      try {
-        db.addLink({ ...link, projectId: p.id });
-      } catch (_) {
-        // skip dup
-      }
-    }
-    for (const proposal of p.proposals ?? []) {
-      try {
-        db.addProposal({
-          id: proposal.proposalId ?? proposal.id,
-          parentId: proposal.parentId,
-          prompt: proposal.prompt,
-          rationale: proposal.rationale ?? '',
-          projectId: p.id,
-        });
-      } catch (_) {
-        // skip dup
-      }
-    }
-    created.push(p.id);
-  };
-  if (active) seedProject(active);
-  for (const a of archive) seedProject(a);
-  logEvent('migrate.complete', {
-    created: created.length,
-    skipped: skipped.length,
-  });
-  res.json({ created, skipped });
-});
-
 app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }));
 
 // ───────────────────── WebSocket: per-project channels ────────────────
 //
-// Phase 0d. Each connected client subscribes to one project at a time
+// Each connected client subscribes to one project at a time
 // (the active canvas) and receives every mutation that lands on that
 // project — agent-emitted (via /api/generate's tool resolvers) and
 // user-emitted (via /api/projects/:id/* mutation endpoints). Multi-tab,
-// multi-device, and the future background worker (Phase 1) all share
+// multi-device, and the future background worker  all share
 // this one fan-out point.
 //
 // We attach the WS to the same HTTP server so a single PORT serves both.

@@ -60,9 +60,3 @@ export interface Link {
   kind: string; // free-form short label: "answers", "contradicts", "elaborates", etc
 }
 
-// The full conversation graph: many turns connected by parent pointers,
-// possibly multiple roots (one per "+ new"-d session). Indexed by id.
-export interface ConversationGraph {
-  turns: Record<TurnId, Turn>;
-  links: Link[];
-}

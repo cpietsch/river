@@ -59,7 +59,6 @@ Working today (smoke-tested):
 
 Prototype-only:
 
-- `START_SEED` pre-fills the input on a fresh canvas for fast iteration
 - `(window as any).__editor__` is a dev handle on tldraw's editor
 - The cloudflare tunnel URL changes; mobile has its own quirks
 - Container `/workspace/` is writable but not yet surfaced in the UI

@@ -138,7 +138,6 @@ Sessions are NOT deleted on completion; the canvas's event log + container state
 
 ## Prototype-only knobs
 
-- `START_SEED` in `App.tsx` — pre-fills the input on a fresh canvas for fast iteration.
 - `(window as any).__editor__` — dev handle exposed in `handleMount`. Remove before shipping.
 - `npx tsx src/graph/extractSpans.test.ts` — runs the local extractor on five sample topics (tech, cooking, history, philosophy, biology) and prints the spans. Useful when tuning coverage.
 - `scratch/` — mobile screenshots from prior iterations; not used at runtime.

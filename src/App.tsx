@@ -47,8 +47,6 @@ const SMOOTH_CAMERA = {
   animation: { duration: 500, easing: EASINGS.easeOutCubic },
 } as const;
 
-const START_SEED = 'LUCKFOX PicoKVM Base vs NanoKVM';
-
 const components: TLComponents = {
   ContextMenu: null,
 };
@@ -165,8 +163,8 @@ export function App() {
     if (turnList.length === 0) {
       const id = createTurn({ role: 'user', parentId: null });
       setActiveId(id);
-      setInput(START_SEED);
-      // Center horizontally on the seed card, leaving room above for tools.
+      setInput('');
+      // Center horizontally on the active input, leaving room above for tools.
       editor.setCamera(
         { x: CARD_WIDTH / 2, y: 180 + CARD_HEIGHT_MIN / 2, z: 1 },
         { animation: { duration: 0 } },
@@ -1226,7 +1224,7 @@ export function App() {
         meta: {},
       });
       setActiveId(id);
-      setInput(START_SEED);
+      setInput('');
       repaintCanvas();
       editor.centerOnPoint(
         { x: CARD_WIDTH / 2, y: CARD_HEIGHT_MIN / 2 + 90 },

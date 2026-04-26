@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.0",
+    "better-sqlite3": "^12.9.0",
     "compromise": "^14.15.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",

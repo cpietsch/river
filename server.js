@@ -3,6 +3,7 @@ import express from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'node:fs';
 import path from 'node:path';
+import * as db from './db.js';
 
 // Structured JSONL logging — one file per UTC day under ./logs/. Used to
 // analyze sessions after the fact (which agents fire, how often the brain
@@ -1247,6 +1248,194 @@ app.get('/api/info', async (req, res) => {
       error: String(err?.message ?? err),
     });
   }
+});
+
+// ───────────────────── Projects + canvas state API ─────────────────────
+//
+// Phase 0: server is now the source of truth for the canvas. Each project
+// holds turns, links, and pending proposals; the agent's session id lives
+// on the project row. Clients fetch on mount, write through the mutation
+// endpoints, and (Phase 0b) subscribe to a per-project WebSocket for
+// live updates.
+
+app.get('/api/projects', (_req, res) => {
+  res.json({ projects: db.listProjects() });
+});
+
+app.post('/api/projects', (req, res) => {
+  const { id, name, sessionId } = req.body ?? {};
+  if (!id || typeof id !== 'string' || !id.startsWith('proj_')) {
+    res.status(400).json({ error: 'id (proj_*) required' });
+    return;
+  }
+  if (db.getProject(id)) {
+    res.status(409).json({ error: 'project already exists' });
+    return;
+  }
+  res.json({ project: db.createProject({ id, name, sessionId }) });
+});
+
+app.get('/api/projects/:id/state', (req, res) => {
+  const state = db.getProjectState(req.params.id);
+  if (!state) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  res.json(state);
+});
+
+app.patch('/api/projects/:id', (req, res) => {
+  const { name, sessionId } = req.body ?? {};
+  const proj = db.getProject(req.params.id);
+  if (!proj) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  if (typeof name === 'string' && name.trim()) {
+    db.renameProject(req.params.id, name.trim());
+  }
+  if (sessionId === null || typeof sessionId === 'string') {
+    db.setProjectSession(req.params.id, sessionId);
+  }
+  res.json({ project: db.getProject(req.params.id) });
+});
+
+app.delete('/api/projects/:id', (req, res) => {
+  const proj = db.getProject(req.params.id);
+  if (!proj) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  db.deleteProject(req.params.id);
+  res.json({ ok: true });
+});
+
+// ── Mutations on canvas state. Each mutation is a single small endpoint so
+//    server-side logic can broadcast it on a project channel later
+//    without trying to interpret a generic "diff". ──
+
+app.post('/api/projects/:id/turns', (req, res) => {
+  const projectId = req.params.id;
+  if (!db.getProject(projectId)) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  const turn = req.body?.turn;
+  if (!turn || !turn.id || !turn.role) {
+    res.status(400).json({ error: 'turn.id + turn.role required' });
+    return;
+  }
+  db.upsertTurn({ ...turn, projectId });
+  res.json({ ok: true });
+});
+
+app.delete('/api/projects/:id/turns/:turnId', (req, res) => {
+  const projectId = req.params.id;
+  if (!db.getProject(projectId)) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  const removed = db.deleteSubtree(req.params.turnId, projectId);
+  res.json({ ok: true, removed });
+});
+
+app.post('/api/projects/:id/links', (req, res) => {
+  const projectId = req.params.id;
+  if (!db.getProject(projectId)) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  const link = req.body?.link;
+  if (!link || !link.id || !link.fromId || !link.toId) {
+    res.status(400).json({ error: 'link.{id,fromId,toId} required' });
+    return;
+  }
+  db.addLink({ ...link, projectId });
+  res.json({ ok: true });
+});
+
+app.delete('/api/projects/:id/links/:linkId', (req, res) => {
+  db.removeLink(req.params.linkId, req.params.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/projects/:id/proposals', (req, res) => {
+  const projectId = req.params.id;
+  if (!db.getProject(projectId)) {
+    res.status(404).json({ error: 'project not found' });
+    return;
+  }
+  const proposal = req.body?.proposal;
+  if (!proposal || !proposal.id || !proposal.parentId || !proposal.prompt) {
+    res.status(400).json({ error: 'proposal.{id,parentId,prompt} required' });
+    return;
+  }
+  db.addProposal({ ...proposal, projectId });
+  res.json({ ok: true });
+});
+
+app.delete('/api/projects/:id/proposals/:proposalId', (req, res) => {
+  db.removeProposal(req.params.proposalId, req.params.id);
+  res.json({ ok: true });
+});
+
+// One-shot migration from the client's localStorage shape into the server
+// DB. Idempotent: skips projects whose id already exists. Body:
+//   {
+//     active?: { id, name?, sessionId?, turns: Record<id, Turn>,
+//                links: Link[], proposals: BranchProposal[] },
+//     archive?: ArchivedProject[]   // each {id, name, sessionId, turns}
+//   }
+app.post('/api/migrate', (req, res) => {
+  const { active, archive = [] } = req.body ?? {};
+  const created = [];
+  const skipped = [];
+  const seedProject = (p) => {
+    if (!p?.id || db.getProject(p.id)) {
+      skipped.push(p?.id);
+      return;
+    }
+    db.createProject({
+      id: p.id,
+      name: p.name ?? 'untitled canvas',
+      sessionId: p.sessionId ?? null,
+    });
+    for (const turn of Object.values(p.turns ?? {})) {
+      db.upsertTurn({
+        ...turn,
+        projectId: p.id,
+        createdAt: turn.createdAt ?? Date.now(),
+      });
+    }
+    for (const link of p.links ?? []) {
+      try {
+        db.addLink({ ...link, projectId: p.id });
+      } catch (_) {
+        // skip dup
+      }
+    }
+    for (const proposal of p.proposals ?? []) {
+      try {
+        db.addProposal({
+          id: proposal.proposalId ?? proposal.id,
+          parentId: proposal.parentId,
+          prompt: proposal.prompt,
+          rationale: proposal.rationale ?? '',
+          projectId: p.id,
+        });
+      } catch (_) {
+        // skip dup
+      }
+    }
+    created.push(p.id);
+  };
+  if (active) seedProject(active);
+  for (const a of archive) seedProject(a);
+  logEvent('migrate.complete', {
+    created: created.length,
+    skipped: skipped.length,
+  });
+  res.json({ created, skipped });
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }));

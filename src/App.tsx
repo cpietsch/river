@@ -15,7 +15,9 @@ import {
 } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
+  deleteProjectRemote,
   deleteSession,
+  deleteSubtreeRemote,
   fetchAgentPredictions,
   fetchInfo,
   fetchLabels,
@@ -23,7 +25,10 @@ import {
   fetchProjectState,
   logEvent,
   migrateLocalState,
+  patchProjectRemote,
+  removeProposalRemote,
   streamGenerate,
+  upsertTurnRemote,
   type AgentInfo,
   type ChatMessage,
   type AgentPrediction,
@@ -773,6 +778,17 @@ export function App() {
     const store = useConversation.getState();
     if (!store.getTurn(sourceId)) return null;
     const newId = store.createTurn({ role: 'user', parentId: sourceId });
+    // Mirror the empty user turn server-side so a different device sees
+    // the new branch on next fetch even if the user doesn't type yet.
+    void upsertTurnRemote(store.activeProjectId, {
+      id: newId,
+      role: 'user',
+      content: '',
+      parentId: sourceId,
+      emphasis: 1,
+      streaming: false,
+      meta: {},
+    });
     // Camera follows after layout settles (sync happens synchronously).
     const editor = editorRef.current;
     if (editor) {
@@ -817,10 +833,12 @@ export function App() {
 
   const acceptProposal = useCallback(
     (p: BranchProposal) => {
+      const projectId = useConversation.getState().activeProjectId;
       const turn = useConversation.getState().getTurn(p.parentId as TurnId);
       if (!turn) {
         // Parent gone (rare — user deleted the card mid-stream). Drop it.
         useConversation.getState().removeProposal(p.proposalId);
+        void removeProposalRemote(projectId, p.proposalId);
         return;
       }
       const newId = createBranchUserTurn(p.parentId as TurnId);
@@ -830,6 +848,7 @@ export function App() {
         parentId: p.parentId,
       });
       useConversation.getState().removeProposal(p.proposalId);
+      void removeProposalRemote(projectId, p.proposalId);
       // Treat as if the user is on this new branch: clears input, creates
       // a follow-up empty user turn after the stream completes, pans the
       // camera. Without `activate`, runTurnFrom's "is this the active
@@ -845,7 +864,9 @@ export function App() {
 
   const dismissProposal = useCallback((proposalId: string) => {
     logEvent('client.proposal_dismiss', { proposalId });
+    const projectId = useConversation.getState().activeProjectId;
     useConversation.getState().removeProposal(proposalId);
+    void removeProposalRemote(projectId, proposalId);
   }, []);
 
   const togglePrediction = useCallback(
@@ -869,14 +890,25 @@ export function App() {
     const next = (t.emphasis ?? 1) >= 2 ? 1 : 2;
     useConversation.getState().setEmphasis(id, next);
     logEvent('client.emphasis_toggle', { id, emphasis: next });
+    void upsertTurnRemote(useConversation.getState().activeProjectId, {
+      id,
+      role: t.role,
+      content: t.content,
+      parentId: t.parentId,
+      emphasis: next,
+      streaming: t.streaming,
+      meta: t.meta as Record<string, unknown>,
+    });
   }, []);
 
   const deleteCard = useCallback(
     (turnId: TurnId) => {
+      const projectId = useConversation.getState().activeProjectId;
       const removed = new Set(
         useConversation.getState().removeSubtree(turnId),
       );
       logEvent('client.delete', { turnId, removedCount: removed.size });
+      void deleteSubtreeRemote(projectId, turnId);
       if (activeId && removed.has(activeId)) {
         // Re-seat active on the most recent empty user turn, or last turn.
         const turns = Object.values(useConversation.getState().turns);
@@ -1020,6 +1052,7 @@ export function App() {
     if (!target) return;
     if (target.sessionId) void deleteSession(target.sessionId);
     useConversation.getState().deleteArchived(archiveId);
+    void deleteProjectRemote(archiveId);
     logEvent('client.delete_project', {
       archiveId,
       hadSession: !!target.sessionId,
@@ -1029,6 +1062,7 @@ export function App() {
   const renameArchivedProject = useCallback(
     (archiveId: string, name: string) => {
       useConversation.getState().renameArchived(archiveId, name);
+      void patchProjectRemote(archiveId, { name });
     },
     [],
   );
@@ -1050,6 +1084,9 @@ export function App() {
     }
     void deleteSession(cur);
     useConversation.getState().setProjectSessionId(null);
+    void patchProjectRemote(useConversation.getState().activeProjectId, {
+      sessionId: null,
+    });
     logEvent('client.reset_session', { sessionId: cur });
   }, []);
 

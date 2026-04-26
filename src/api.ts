@@ -374,6 +374,112 @@ export async function fetchProjectState(
   }
 }
 
+// ── Per-mutation client → server sync (Phase 0c.2) ─────────────────────
+//
+// Each user-side mutation (toggleEmphasis, deleteCard, dismissProposal,
+// archive operations, …) is mirrored to the server via these fire-and-
+// forget POSTs. Errors are swallowed: the local zustand store is the
+// optimistic source of truth; the server is the durable copy that other
+// devices and the background worker (Phase 1) read from.
+
+/** Upsert one turn server-side. Used after createTurn, setEmphasis,
+ *  setContent (when content stops streaming), branchFrom, etc. */
+export async function upsertTurnRemote(
+  projectId: string,
+  turn: {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    parentId: string | null;
+    emphasis: number;
+    streaming?: boolean;
+    meta?: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}/turns`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ turn }),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+/** Cascade-delete a subtree of turns. */
+export async function deleteSubtreeRemote(
+  projectId: string,
+  turnId: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/turns/${encodeURIComponent(turnId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/** Drop a pending branch proposal server-side (after the user accepts
+ *  or dismisses it). */
+export async function removeProposalRemote(
+  projectId: string,
+  proposalId: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/** Drop a link server-side. */
+export async function removeLinkRemote(
+  projectId: string,
+  linkId: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
+      { method: 'DELETE' },
+    );
+  } catch {
+    // ignore
+  }
+}
+
+/** Patch a project: rename, set/clear sessionId. */
+export async function patchProjectRemote(
+  projectId: string,
+  patch: { name?: string; sessionId?: string | null },
+): Promise<void> {
+  try {
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+/** Cascade-delete a project (turns, links, proposals all go). */
+export async function deleteProjectRemote(projectId: string): Promise<void> {
+  try {
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // ignore
+  }
+}
+
 /** One-shot migration: push the client's existing localStorage shape up
  *  to the server. Idempotent — projects that already exist server-side
  *  are skipped. */

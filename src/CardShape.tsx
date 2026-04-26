@@ -155,16 +155,30 @@ function CardBody({ shape }: { shape: CardShape }) {
   );
 
   // Measure the content block so the card's shape height matches exactly the
-  // rendered text — one source of truth, no character-count heuristic.
+  // rendered text — one source of truth, no character-count heuristic. Uses
+  // ResizeObserver so we re-measure on every reflow that matters: initial
+  // mount, content edits, viewport changes, AND late font loads (Source
+  // Serif 4 arrives async via Google Fonts; without this hook, the first
+  // measurement runs against the system-ui fallback and then never re-fires
+  // when the serif lands taller — cards render clipped mid-sentence on
+  // reload until the user edits something).
   useLayoutEffect(() => {
     if (isActive && isUser && !content) return; // active input card measures itself
     const el = contentRef.current;
     if (!el || !resizeCard) return;
-    const measured = el.scrollHeight;
-    // If measured is 0 the shape is culled/unmounted; don't clobber the stored
-    // height with a bogus value or the card turns into a one-pixel sliver.
-    if (measured <= 0) return;
-    resizeCard(shape.id, measured);
+    // Initial sync read (matches the prior useLayoutEffect behavior so
+    // first-paint height is right when the system-ui fallback measurement
+    // happens to match the final font's measurement).
+    const initial = el.scrollHeight;
+    if (initial > 0) resizeCard(shape.id, initial);
+    const observer = new ResizeObserver(() => {
+      const measured = el.scrollHeight;
+      // Skip 0 — the shape is culled/unmounted; clobbering height would
+      // turn the card into a one-pixel sliver.
+      if (measured > 0) resizeCard(shape.id, measured);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [content, streaming, w, isActive, isUser, resizeCard, shape.id]);
 
   // ACTIVE USER CARD = embedded chat input (only when content is still empty;

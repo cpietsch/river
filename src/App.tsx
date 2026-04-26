@@ -407,6 +407,7 @@ export function App() {
               userContext,
               graph: buildGraphSnapshot(),
               sessionId: useConversation.getState().projectSessionId,
+              projectId: useConversation.getState().activeProjectId,
               pathIds: pathIdsFor(userTurnId),
               responseCardId: assistantId,
               onSessionId: (id) => {

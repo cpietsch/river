@@ -28,6 +28,10 @@ export interface ArchivedProject {
 }
 
 interface ConversationStore {
+  // Stable identifier for the active project. Server uses this to scope
+  // persisted state per canvas (Phase 0b — lazily created on the server
+  // on the first /api/generate call when an activeProjectId arrives).
+  activeProjectId: string;
   // Active canvas working set.
   turns: Record<TurnId, Turn>;
   // Persistent Managed Agent session for the active project. All turns
@@ -120,6 +124,7 @@ export function deriveProjectName(turns: Record<TurnId, Turn>): string {
 export const useConversation = create<ConversationStore>()(
   persist(
     (set, get) => ({
+  activeProjectId: makeProjectId(),
   turns: {},
   projectSessionId: null,
   archive: [],
@@ -378,7 +383,13 @@ export const useConversation = create<ConversationStore>()(
   },
 
   reset: () =>
-    set({ turns: {}, projectSessionId: null, proposals: [], links: [] }),
+    set({
+      activeProjectId: makeProjectId(),
+      turns: {},
+      projectSessionId: null,
+      proposals: [],
+      links: [],
+    }),
 
   // Stash the active canvas onto the archive list and clear active state. No
   // session deletion — the user may resume this project later. Empty active
@@ -393,7 +404,7 @@ export const useConversation = create<ConversationStore>()(
       const nextArchive = worth
         ? [
             {
-              id: makeProjectId(),
+              id: s.activeProjectId,
               name: deriveProjectName(s.turns),
               sessionId: s.projectSessionId,
               turns: s.turns,
@@ -403,6 +414,7 @@ export const useConversation = create<ConversationStore>()(
           ]
         : s.archive;
       return {
+        activeProjectId: makeProjectId(),
         turns: {},
         projectSessionId: null,
         archive: nextArchive,
@@ -427,7 +439,7 @@ export const useConversation = create<ConversationStore>()(
     const nextArchive = worth
       ? [
           {
-            id: makeProjectId(),
+            id: cur.activeProjectId,
             name: deriveProjectName(cur.turns),
             sessionId: cur.projectSessionId,
             turns: cur.turns,
@@ -437,6 +449,7 @@ export const useConversation = create<ConversationStore>()(
         ]
       : remaining;
     set({
+      activeProjectId: target.id,
       turns: target.turns,
       projectSessionId: target.sessionId,
       archive: nextArchive,
@@ -510,6 +523,7 @@ export const useConversation = create<ConversationStore>()(
       storage: createJSONStorage(() => localStorage),
       // Only persist the data, not the action functions.
       partialize: (state) => ({
+        activeProjectId: state.activeProjectId,
         turns: state.turns,
         projectSessionId: state.projectSessionId,
         archive: state.archive,

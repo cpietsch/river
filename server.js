@@ -353,9 +353,29 @@ app.post('/api/generate', async (req, res) => {
     userContext = [],
     graph = null,
     sessionId: incomingSessionId = null,
+    projectId = null,
     pathIds = [],
     responseCardId = null,
   } = req.body ?? {};
+
+  // Phase 0b: lazily ensure the project row exists server-side so
+  // subsequent agent mutations (create_card / edit_card / flag_card /
+  // link_cards / create_branch) can be persisted to the DB. Existing
+  // canvases that pre-date this branch will get their server row
+  // bootstrapped here on next turn; their pre-existing turns won't be
+  // backfilled (use POST /api/migrate for that).
+  if (projectId && !db.getProject(projectId)) {
+    try {
+      db.createProject({
+        id: projectId,
+        name: input.trim().slice(0, 60) || 'untitled canvas',
+        sessionId: incomingSessionId,
+      });
+      logEvent('project.created', { projectId });
+    } catch (err) {
+      logEvent('project.create_failed', { projectId, message: err?.message });
+    }
+  }
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
     return;
@@ -439,6 +459,12 @@ app.post('/api/generate', async (req, res) => {
       sessionId = created.id;
       logEvent('generate.session_created', { sessionId });
     }
+    // Mirror the session id onto the project row so DB-side state matches
+    // what the client knows. (Server-side workers will need this to reach
+    // the right session in Phase 1.)
+    if (projectId && db.getProject(projectId)) {
+      db.setProjectSession(projectId, sessionId);
+    }
     // Tell the client the session id (it may be the same id they sent, or a
     // freshly minted one). The store persists it so subsequent turns reuse.
     res.write(
@@ -474,6 +500,9 @@ app.post('/api/generate', async (req, res) => {
       }
       const created = await anthropic.beta.sessions.create(sessionParams);
       sessionId = created.id;
+      if (projectId && db.getProject(projectId)) {
+        db.setProjectSession(projectId, sessionId);
+      }
       text = buildFullKickoff(history, input, emphasized, userContext, pathIds, responseCardId);
       res.write(
         `data: ${JSON.stringify({ type: 'session', sessionId })}\n\n`,
@@ -585,6 +614,13 @@ app.post('/api/generate', async (req, res) => {
                 kind,
               })}\n\n`,
             );
+            if (projectId && db.getProject(projectId)) {
+              try {
+                db.addLink({ id: linkId, projectId, fromId, toId, kind });
+              } catch (err) {
+                logEvent('db.link_error', { projectId, message: err?.message });
+              }
+            }
             result = JSON.stringify({
               ok: true,
               link_id: linkId,
@@ -625,6 +661,24 @@ app.post('/api/generate', async (req, res) => {
             );
             // Update in-flight snapshot so subsequent calls see new text.
             target.content = newContent;
+            if (projectId && db.getProject(projectId)) {
+              try {
+                // Edit propagates as an upsert with the existing role
+                // (assistant — we already validated). Meta is preserved.
+                db.upsertTurn({
+                  id: cardId,
+                  projectId,
+                  role: target.role,
+                  content: newContent,
+                  parentId: target.parentId ?? null,
+                  emphasis: target.emphasis ?? 1,
+                  streaming: false,
+                  meta: target.meta ?? {},
+                });
+              } catch (err) {
+                logEvent('db.edit_error', { projectId, message: err?.message });
+              }
+            }
             result = JSON.stringify({
               ok: true,
               status: 'card rewritten in place',
@@ -707,6 +761,22 @@ app.post('/api/generate', async (req, res) => {
                 emphasis: 1,
               };
             }
+            if (projectId && db.getProject(projectId)) {
+              try {
+                db.upsertTurn({
+                  id: newId,
+                  projectId,
+                  role,
+                  content,
+                  parentId,
+                  emphasis: 1,
+                  streaming: false,
+                  meta: {},
+                });
+              } catch (err) {
+                logEvent('db.create_card_error', { projectId, message: err?.message });
+              }
+            }
             result = JSON.stringify({
               ok: true,
               card_id: newId,
@@ -770,6 +840,22 @@ app.post('/api/generate', async (req, res) => {
                   emphasis: 1,
                 };
               }
+              if (projectId && db.getProject(projectId)) {
+                try {
+                  db.upsertTurn({
+                    id: newId,
+                    projectId,
+                    role,
+                    content,
+                    parentId,
+                    emphasis: 1,
+                    streaming: false,
+                    meta: {},
+                  });
+                } catch (err) {
+                  logEvent('db.create_cards_error', { projectId, message: err?.message });
+                }
+              }
             }
             const created = ids.filter(Boolean);
             result = JSON.stringify({
@@ -802,6 +888,24 @@ app.post('/api/generate', async (req, res) => {
                 reason: reason.slice(0, 240),
               })}\n\n`,
             );
+            // Reflect the flag on the DB row: emphasis = 2 + meta.agentFlagReason.
+            const target = (graph?.turns ?? {})[cardId];
+            if (target && projectId && db.getProject(projectId)) {
+              try {
+                db.upsertTurn({
+                  id: cardId,
+                  projectId,
+                  role: target.role,
+                  content: target.content ?? '',
+                  parentId: target.parentId ?? null,
+                  emphasis: 2,
+                  streaming: false,
+                  meta: { ...(target.meta ?? {}), agentFlagReason: reason.slice(0, 240) },
+                });
+              } catch (err) {
+                logEvent('db.flag_error', { projectId, message: err?.message });
+              }
+            }
             result = JSON.stringify({
               ok: true,
               status: 'card flagged for the user',
@@ -833,6 +937,19 @@ app.post('/api/generate', async (req, res) => {
                 rationale: rationale.slice(0, 240),
               })}\n\n`,
             );
+            if (projectId && db.getProject(projectId)) {
+              try {
+                db.addProposal({
+                  id: event.id,
+                  projectId,
+                  parentId,
+                  prompt: prompt.slice(0, 240),
+                  rationale: rationale.slice(0, 240),
+                });
+              } catch (err) {
+                logEvent('db.proposal_error', { projectId, message: err?.message });
+              }
+            }
             result = JSON.stringify({
               ok: true,
               status: 'shown to user as a draft branch suggestion',

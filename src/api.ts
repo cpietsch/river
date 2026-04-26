@@ -135,6 +135,7 @@ export async function streamGenerate(
     userContext?: string[];
     graph?: GraphSnapshot | null;
     sessionId?: string | null;
+    projectId?: string | null;
     pathIds?: string[];
     responseCardId?: string | null;
     onSessionId?: (id: string) => void;
@@ -153,6 +154,7 @@ export async function streamGenerate(
     userContext = [],
     graph = null,
     sessionId = null,
+    projectId = null,
     pathIds = [],
     responseCardId = null,
     onSessionId,
@@ -174,6 +176,7 @@ export async function streamGenerate(
       userContext,
       graph,
       sessionId,
+      projectId,
       pathIds,
       responseCardId,
     }),

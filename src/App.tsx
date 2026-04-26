@@ -76,6 +76,7 @@ export function App() {
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [wakeOpen, setWakeOpen] = useState(false);
   const proposals = useConversation((s) => s.proposals);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const labelInFlightRef = useRef(false);
@@ -1527,10 +1528,8 @@ export function App() {
             <ProjectsMenu
               activeName={activeProjectName}
               activeSessionId={activeSessionId}
-              activeWakeIntent={activeWakeIntent}
               info={agentInfo}
               archive={otherProjects}
-              wakeBusy={wakeBusy}
               onClose={() => setProjectsOpen(false)}
               onNew={() => {
                 setProjectsOpen(false);
@@ -1544,22 +1543,69 @@ export function App() {
                 setProjectsOpen(false);
                 resetActiveSession();
               }}
-              onWake={() => {
-                setProjectsOpen(false);
-                void wakeActive();
-              }}
-              onWakeIntentChange={(intent) => {
-                if (!activeProjectIdSelRaw) return;
-                void patchProjectRemote(activeProjectIdSelRaw, { wakeIntent: intent }).then(
-                  () => refreshProjects(),
-                );
-              }}
               onDelete={deleteArchivedProject}
               onRename={renameArchivedProject}
             />
           )}
         </div>
 
+        {/* Wake button — second toolbar slot. Click opens a small popover
+            with the per-canvas direction textarea + a "wake now" trigger.
+            Replaces the wake controls that used to live inside the
+            projects menu. */}
+        {activeSessionId && (
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setWakeOpen((o) => !o)}
+              disabled={wakeBusy}
+              aria-label="Wake the agent and steer it"
+              aria-expanded={wakeOpen}
+              data-testid="toggle-wake"
+              title="Wake the agent. Optionally write a direction it should keep watching for between sessions."
+              style={{
+                ...toolbarBtn,
+                background: wakeOpen ? '#111' : '#fff',
+                color: wakeBusy ? '#aaa' : wakeOpen ? '#fff' : '#111',
+                cursor: wakeBusy ? 'default' : 'pointer',
+                opacity: wakeBusy ? 0.6 : 1,
+              }}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden
+              >
+                <path
+                  d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1M9 12a3 3 0 1 1 6 0 3 3 0 0 1-6 0z"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                />
+              </svg>
+              wake
+            </button>
+            {wakeOpen && (
+              <WakeMenu
+                activeWakeIntent={activeWakeIntent}
+                wakeBusy={wakeBusy}
+                onClose={() => setWakeOpen(false)}
+                onWakeIntentChange={(intent) => {
+                  if (!activeProjectIdSelRaw) return;
+                  void patchProjectRemote(activeProjectIdSelRaw, {
+                    wakeIntent: intent,
+                  }).then(() => refreshProjects());
+                }}
+                onWake={() => {
+                  setWakeOpen(false);
+                  void wakeActive();
+                }}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* Top-right floating panel: agent's branch proposals */}
@@ -1856,6 +1902,159 @@ function ProposalsPanel({
   );
 }
 
+/* ─── Wake menu ─── */
+
+/**
+ * Popover anchored to the toolbar wake button. Two parts:
+ * 1) a textarea for the optional per-canvas wake direction (blur-saves
+ *    to the project row), and
+ * 2) a "wake now" trigger that fires the autonomous turn against the
+ *    saved direction.
+ *
+ * Surfacing this on the toolbar (rather than buried in the projects
+ * menu) makes wake a first-class affordance — the user can steer and
+ * trigger the cartographer in two clicks.
+ */
+function WakeMenu({
+  activeWakeIntent,
+  wakeBusy,
+  onClose,
+  onWakeIntentChange,
+  onWake,
+}: {
+  activeWakeIntent: string;
+  wakeBusy: boolean;
+  onClose: () => void;
+  onWakeIntentChange: (intent: string) => void;
+  onWake: () => void;
+}) {
+  const [draft, setDraft] = useState(activeWakeIntent);
+  useEffect(() => {
+    setDraft(activeWakeIntent);
+  }, [activeWakeIntent]);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  const commit = () => {
+    if (draft !== activeWakeIntent) onWakeIntentChange(draft);
+  };
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{ position: 'fixed', inset: 0, zIndex: 1499 }}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-label="Wake the agent"
+        style={{
+          position: 'absolute',
+          top: 'calc(100% + 6px)',
+          left: 0,
+          width: 320,
+          background: '#fff',
+          border: '1px solid rgba(26,26,26,0.14)',
+          borderRadius: 12,
+          boxShadow:
+            '0 10px 30px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06)',
+          padding: 12,
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          fontSize: 13,
+          color: '#1a1a1a',
+          zIndex: 1500,
+        }}
+      >
+        <label
+          style={{
+            display: 'block',
+            fontSize: 11,
+            color: '#9a9590',
+            letterSpacing: 0.3,
+            textTransform: 'uppercase',
+            marginBottom: 6,
+          }}
+        >
+          wake direction
+        </label>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+          placeholder="optional · what should the agent watch for between sessions?"
+          rows={3}
+          style={{
+            width: '100%',
+            padding: '8px 10px',
+            border: '1px solid #e0dfd9',
+            borderRadius: 6,
+            background: '#fafaf7',
+            font: 'inherit',
+            fontSize: 13,
+            lineHeight: 1.45,
+            color: '#1a1a1a',
+            resize: 'vertical',
+            minHeight: 60,
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.background = '#fff';
+            e.currentTarget.style.borderColor = '#bdb9b0';
+          }}
+        />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginTop: 10,
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 11, color: '#9a9590' }}>
+            empty = generic survey
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              commit();
+              onWake();
+            }}
+            disabled={wakeBusy}
+            style={{
+              border: 'none',
+              borderRadius: 8,
+              padding: '8px 14px',
+              background: wakeBusy ? '#bbb' : '#111',
+              color: '#fff',
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: wakeBusy ? 'default' : 'pointer',
+              fontFamily: 'inherit',
+              opacity: wakeBusy ? 0.6 : 1,
+            }}
+          >
+            {wakeBusy ? 'waking…' : 'wake now'}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ─── Projects menu ─── */
 
 /**
@@ -1868,44 +2067,28 @@ function ProposalsPanel({
 function ProjectsMenu({
   activeName,
   activeSessionId,
-  activeWakeIntent,
   info,
   archive,
-  wakeBusy,
   onClose,
   onNew,
   onResume,
   onResetSession,
-  onWake,
-  onWakeIntentChange,
   onDelete,
   onRename,
 }: {
   activeName: string;
   activeSessionId: string | null;
-  activeWakeIntent: string;
   info: AgentInfo | null;
   archive: import('./api').ServerProject[];
-  wakeBusy: boolean;
   onClose: () => void;
   onNew: () => void;
   onResume: (id: string) => void;
   onResetSession: () => void;
-  onWake: () => void;
-  onWakeIntentChange: (intent: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  // Local draft for the wake intent textarea — committed on blur or Enter.
-  // The remote value lives on the project row server-side; activeWakeIntent
-  // here is the source of truth, and we sync the draft to it when the
-  // canvas changes.
-  const [intentDraft, setIntentDraft] = useState(activeWakeIntent);
-  useEffect(() => {
-    setIntentDraft(activeWakeIntent);
-  }, [activeWakeIntent]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2035,42 +2218,6 @@ function ProjectsMenu({
           {activeSessionId && (
             <button
               type="button"
-              onClick={onWake}
-              disabled={wakeBusy}
-              aria-label="Ask the agent to take an autonomous turn"
-              title="Wake the agent: it reviews the canvas + memory and contributes one useful thing if it sees something (a flag, a link, a draft) — or ends silently."
-              style={{
-                flex: '0 0 auto',
-                border: 'none',
-                background: 'none',
-                padding: 4,
-                cursor: wakeBusy ? 'default' : 'pointer',
-                color: wakeBusy ? '#cccccc' : '#6b6660',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 4,
-              }}
-              onMouseEnter={(e) => {
-                if (!wakeBusy) e.currentTarget.style.color = '#1a1a1a';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = wakeBusy ? '#cccccc' : '#6b6660';
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
-                <path
-                  d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1M9 12a3 3 0 1 1 6 0 3 3 0 0 1-6 0z"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
-          )}
-          {activeSessionId && (
-            <button
-              type="button"
               onClick={onResetSession}
               aria-label="Reset this canvas's agent session"
               title="Drop the current Managed Agent session and start fresh on the next turn. Cards stay; agent's working memory + container reset."
@@ -2104,61 +2251,6 @@ function ProjectsMenu({
               </svg>
             </button>
           )}
-        </div>
-
-        {/* Wake intent — optional per-canvas direction the cartographer
-            uses on autonomous wakes. Empty by default; if filled, the
-            wake kickoff treats this as the focus for what to watch for
-            between sessions. */}
-        <div style={{ padding: '4px 10px 8px' }}>
-          <label
-            style={{
-              display: 'block',
-              fontSize: 11,
-              color: '#9a9590',
-              letterSpacing: 0.3,
-              textTransform: 'uppercase',
-              marginBottom: 4,
-            }}
-          >
-            wake direction
-          </label>
-          <textarea
-            value={intentDraft}
-            onChange={(e) => setIntentDraft(e.target.value)}
-            onBlur={() => {
-              if (intentDraft !== activeWakeIntent) {
-                onWakeIntentChange(intentDraft);
-              }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                e.currentTarget.blur();
-              }
-            }}
-            placeholder="optional · what should the agent watch for between sessions?"
-            rows={2}
-            style={{
-              width: '100%',
-              padding: '6px 8px',
-              border: '1px solid #e0dfd9',
-              borderRadius: 6,
-              background: '#fafaf7',
-              font: 'inherit',
-              fontSize: 12,
-              lineHeight: 1.4,
-              color: '#1a1a1a',
-              resize: 'vertical',
-              minHeight: 36,
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-            onFocus={(e) => {
-              e.currentTarget.style.background = '#fff';
-              e.currentTarget.style.borderColor = '#bdb9b0';
-            }}
-          />
         </div>
 
         {archive.length === 0 ? (

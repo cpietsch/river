@@ -1293,22 +1293,26 @@ ${rendered}
 Begin.`;
 }
 
-app.post('/api/projects/:id/wake', async (req, res) => {
-  const projectId = req.params.id;
+/**
+ * Run an autonomous wake for a project. Shared by the manual endpoint
+ * (POST /api/projects/:id/wake) and the cron loop. Returns a result
+ * object with status and stats; never throws — internal errors land in
+ * `error` so callers can decide how to surface.
+ */
+async function runWakeForProject(projectId) {
   const project = db.getProject(projectId);
   if (!project) {
-    res.status(404).json({ error: 'project not found' });
-    return;
+    return { ok: false, status: 'not_found', error: 'project not found' };
   }
   if (!project.sessionId) {
-    res.status(400).json({
+    return {
+      ok: false,
+      status: 'no_session',
       error: 'no session yet — the user must take at least one turn first',
-    });
-    return;
+    };
   }
   if (wakeInFlight.has(projectId)) {
-    res.status(429).json({ error: 'a wake is already in flight for this project' });
-    return;
+    return { ok: false, status: 'in_flight', error: 'a wake is already in flight for this project' };
   }
   wakeInFlight.add(projectId);
 
@@ -1655,24 +1659,90 @@ app.post('/api/projects/:id/wake', async (req, res) => {
       kept: assistantBuffer.trim().length > 0,
     });
 
-    res.json({
+    return {
       ok: true,
+      status: 'done',
       responseCardId: assistantBuffer.trim().length > 0 ? responseCardId : null,
       content: assistantBuffer,
       toolUses,
       customToolUses,
       durationMs: Date.now() - startedAt,
-    });
+    };
   } catch (err) {
     logEvent('wake.error', {
       projectId,
       message: String(err?.message ?? err),
     });
-    res.status(500).json({ error: String(err?.message ?? err) });
+    return {
+      ok: false,
+      status: 'error',
+      error: String(err?.message ?? err),
+    };
   } finally {
     wakeInFlight.delete(projectId);
   }
+}
+
+app.post('/api/projects/:id/wake', async (req, res) => {
+  const result = await runWakeForProject(req.params.id);
+  if (!result.ok) {
+    const code =
+      result.status === 'not_found'
+        ? 404
+        : result.status === 'in_flight'
+          ? 429
+          : result.status === 'no_session'
+            ? 400
+            : 500;
+    res.status(code).json({ error: result.error });
+    return;
+  }
+  res.json(result);
 });
+
+// ── Auto-wake loop (cron-like) ──────────────────────────────────────────
+//
+// When WAKE_INTERVAL_SEC is set, the server periodically picks projects
+// that:
+//   - have a sessionId (so the agent has somewhere to go)
+//   - have been quiet for ≥ WAKE_MIN_QUIET_SEC (don't fire while the
+//     user is mid-conversation)
+//   - have been touched within WAKE_MAX_AGE_HOURS (don't burn API calls
+//     on long-abandoned canvases)
+//   - aren't already in-flight
+// and fires runWakeForProject on each. Default off (interval=0).
+
+const WAKE_INTERVAL_SEC = Number(process.env.WAKE_INTERVAL_SEC ?? 0);
+const WAKE_MAX_AGE_HOURS = Number(process.env.WAKE_MAX_AGE_HOURS ?? 24);
+const WAKE_MIN_QUIET_SEC = Number(process.env.WAKE_MIN_QUIET_SEC ?? 300);
+
+if (WAKE_INTERVAL_SEC > 0) {
+  console.log(
+    `auto-wake: every ${WAKE_INTERVAL_SEC}s (max age ${WAKE_MAX_AGE_HOURS}h, min quiet ${WAKE_MIN_QUIET_SEC}s)`,
+  );
+  setInterval(() => {
+    const now = Date.now();
+    const maxAgeMs = WAKE_MAX_AGE_HOURS * 3600 * 1000;
+    const quietMs = WAKE_MIN_QUIET_SEC * 1000;
+    for (const project of db.listProjects()) {
+      if (!project.sessionId) continue;
+      const age = now - project.updatedAt;
+      if (age > maxAgeMs) continue;
+      if (age < quietMs) continue;
+      if (wakeInFlight.has(project.id)) continue;
+      logEvent('wake.cron_pick', {
+        projectId: project.id,
+        ageMs: age,
+      });
+      void runWakeForProject(project.id).catch((err) => {
+        logEvent('wake.cron_error', {
+          projectId: project.id,
+          message: String(err?.message ?? err),
+        });
+      });
+    }
+  }, WAKE_INTERVAL_SEC * 1000);
+}
 
 async function runOneAgent(agentId, filteredHistory) {
   const agent = AGENTS[agentId];

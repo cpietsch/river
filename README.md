@@ -78,8 +78,9 @@ Concretely: chips are invisible until selected. Cards have no chrome until you h
 
 ## Two-process app
 
-- `npm run dev` — Vite (web) + Express API (`:4000`). Vite proxies `/api/*` to Express.
-- `npm run setup-agent` — one-time provisioning of the Managed Agent + environment + memory store. Re-run after editing the system prompt or tool list; each run bumps the agent to a new version (sessions reference latest by default).
-- `.env` needs `ANTHROPIC_API_KEY`. `setup-agent` populates `AGENT_ID`, `ENV_ID`, `MEMORY_STORE_ID`. Optional: `MAIN_MODEL` (default `claude-opus-4-7`), `MIST_MODEL` (default `claude-haiku-4-5-20251001`).
+- `npm run dev` — Vite (web) + Express API (`:4000`). Vite proxies `/api/*` and `/ws/*` to Express.
+- `npm run setup-agent` — applies `scripts/agent.yml` to the Managed Agent (creates if needed). Re-run after editing the YAML; each run bumps the agent to a new version (sessions reference latest by default).
+- `.env` needs `ANTHROPIC_API_KEY`. `setup-agent` populates `AGENT_ID`, `ENV_ID`, `MEMORY_STORE_ID`. Optional: `MAIN_MODEL` (overrides the YAML model), `MIST_MODEL` (default `claude-haiku-4-5-20251001`).
+- **Auto-wake** (background autonomous turns) is OFF by default. Enable with `WAKE_INTERVAL_SEC=N` (e.g. `3600` for hourly). Tunables: `WAKE_MIN_QUIET_SEC` (skip projects with activity in the last N seconds; default 300) and `WAKE_MAX_AGE_HOURS` (skip projects untouched longer than N hours; default 24).
 
 The brain is Opus 4.7 on Anthropic's Managed Agents platform; the perspective pills + card titles + memory inspection use Haiku for speed. See `CLAUDE.md` for the architecture proper.

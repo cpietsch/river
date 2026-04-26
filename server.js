@@ -135,18 +135,18 @@ ${AGENT_SHARED_VOICE}`,
   },
 };
 
-const LABELS_SYSTEM = `You produce ultra-short titles for cards in a chat-as-graph UI. Each card is one user message or one assistant response. Your output powers a navigation menu: the user scans labels to find a card, so labels must be punchy and distinct.
+const LABELS_SYSTEM = `You produce ultra-short classification tags for cards in a chat-as-graph UI. Each card is one user message or one assistant response. The tag floats above the card as an annotation — like a cartographer naming the region of a map.
 
 Rules:
-- 3-6 words per label
-- Sentence case (only first word capitalized; no period)
-- Capture the GIST, not a generic placeholder
-- For user cards: phrase as a topic ("Cooling fan tradeoffs", "How HDR works")
-- For assistant cards: phrase as the takeaway ("Liquid wins for sustained loads", "HDR maps tonal range")
-- No quotes, no emojis, no markdown (no asterisks, no underscores, no brackets)
-- Plain text only — the labels render as inline text in a UI menu
+- 1-3 words per tag — closer to a topic name than a sentence
+- Lowercase, no period, no punctuation other than necessary
+- Name what the card is ABOUT, not what it says: "threat model", "option list", "hardware spec", "edit request", "synthesis", "rebuttal"
+- For user cards: name the topic or the move ("comparison ask", "refinement", "follow-up question")
+- For assistant cards: name the kind of output ("framing", "tradeoff analysis", "draft", "side note")
+- No quotes, no emojis, no markdown
+- Plain text only — these render as small typeset labels above each card
 
-Output ONLY a JSON object whose keys are the card ids and values are the labels. No prose, no fence.`;
+Output ONLY a JSON object whose keys are the card ids and values are the tags. No prose, no fence.`;
 
 function renderConstraintsAndContext(emphasized, userContext) {
   const parts = [];
@@ -806,6 +806,7 @@ app.post('/api/generate', async (req, res) => {
           // under it, etc).
           const parentId = event.input?.parent_id;
           const content = (event.input?.content ?? '').toString();
+          const annotation = (event.input?.annotation ?? '').toString().trim();
           const role = event.input?.role === 'user' ? 'user' : 'assistant';
           const turns = graph?.turns ?? {};
           if (!parentId || !turns[parentId]) {
@@ -815,8 +816,11 @@ app.post('/api/generate', async (req, res) => {
             });
           } else if (!content.trim()) {
             result = JSON.stringify({ ok: false, error: 'content is required' });
+          } else if (!annotation) {
+            result = JSON.stringify({ ok: false, error: 'annotation is required (1-3 word classification tag)' });
           } else {
             const newId = makeShapeId();
+            const meta = { label: annotation.slice(0, 60) };
             res.write(
               `data: ${JSON.stringify({
                 type: 'card_created',
@@ -824,6 +828,7 @@ app.post('/api/generate', async (req, res) => {
                 parentId,
                 role,
                 content: content.slice(0, 8000),
+                meta,
               })}\n\n`,
             );
             // Optimistically extend the in-flight graph snapshot so any
@@ -848,7 +853,7 @@ app.post('/api/generate', async (req, res) => {
                   parentId,
                   emphasis: 1,
                   streaming: false,
-                  meta: {},
+                  meta,
                 };
                 db.upsertTurn(newTurn);
                 broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
@@ -888,6 +893,7 @@ app.post('/api/generate', async (req, res) => {
               const c = cardsIn[i];
               const parentId = c?.parent_id;
               const content = (c?.content ?? '').toString();
+              const annotation = (c?.annotation ?? '').toString().trim();
               const role = c?.role === 'user' ? 'user' : 'assistant';
               if (!parentId || !turns[parentId]) {
                 errors.push(`#${i}: parent_id ${parentId ?? '(missing)'} not in graph`);
@@ -899,7 +905,13 @@ app.post('/api/generate', async (req, res) => {
                 ids.push(null);
                 continue;
               }
+              if (!annotation) {
+                errors.push(`#${i}: annotation is required`);
+                ids.push(null);
+                continue;
+              }
               const newId = makeShapeId();
+              const meta = { label: annotation.slice(0, 60) };
               ids.push(newId);
               res.write(
                 `data: ${JSON.stringify({
@@ -908,6 +920,7 @@ app.post('/api/generate', async (req, res) => {
                   parentId,
                   role,
                   content: content.slice(0, 8000),
+                  meta,
                 })}\n\n`,
               );
               if (graph && graph.turns) {
@@ -929,7 +942,7 @@ app.post('/api/generate', async (req, res) => {
                     parentId,
                     emphasis: 1,
                     streaming: false,
-                    meta: {},
+                    meta,
                   };
                   db.upsertTurn(newTurn);
                   broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
@@ -1465,6 +1478,7 @@ async function runWakeForProject(projectId) {
         if (event.name === 'create_card') {
           const parentId = event.input?.parent_id;
           const content = (event.input?.content ?? '').toString();
+          const annotation = (event.input?.annotation ?? '').toString().trim();
           const role =
             event.input?.role === 'user' ? 'user' : 'assistant';
           if (!parentId || !graphSnap.turns[parentId]) {
@@ -1474,6 +1488,8 @@ async function runWakeForProject(projectId) {
             });
           } else if (!content.trim()) {
             result = JSON.stringify({ ok: false, error: 'content is required' });
+          } else if (!annotation) {
+            result = JSON.stringify({ ok: false, error: 'annotation is required (1-3 word classification tag)' });
           } else {
             const newId = makeShapeId();
             const newTurn = {
@@ -1484,7 +1500,7 @@ async function runWakeForProject(projectId) {
               parentId,
               emphasis: 1,
               streaming: false,
-              meta: {},
+              meta: { label: annotation.slice(0, 60) },
             };
             db.upsertTurn(newTurn);
             broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
@@ -1507,6 +1523,7 @@ async function runWakeForProject(projectId) {
             const c = cardsIn[i];
             const parentId = c?.parent_id;
             const content = (c?.content ?? '').toString();
+            const annotation = (c?.annotation ?? '').toString().trim();
             const role = c?.role === 'user' ? 'user' : 'assistant';
             if (!parentId || !graphSnap.turns[parentId]) {
               errors.push(`#${i}: parent_id not in graph`);
@@ -1515,6 +1532,11 @@ async function runWakeForProject(projectId) {
             }
             if (!content.trim()) {
               errors.push(`#${i}: content required`);
+              ids.push(null);
+              continue;
+            }
+            if (!annotation) {
+              errors.push(`#${i}: annotation required`);
               ids.push(null);
               continue;
             }
@@ -1527,7 +1549,7 @@ async function runWakeForProject(projectId) {
               parentId,
               emphasis: 1,
               streaming: false,
-              meta: {},
+              meta: { label: annotation.slice(0, 60) },
             };
             db.upsertTurn(newTurn);
             broadcast(projectId, { type: 'turn_upsert', turn: newTurn });

@@ -90,6 +90,7 @@ export type CardCreation = {
   parentId: string;
   role: 'user' | 'assistant';
   content: string;
+  meta?: { label?: string };
 };
 
 // Pick-from options the agent attached to a card via the present_options
@@ -241,6 +242,9 @@ export async function streamGenerate(
             parentId: parsed.parentId,
             role: parsed.role === 'user' ? 'user' : 'assistant',
             content: parsed.content,
+            meta: parsed.meta && typeof parsed.meta === 'object'
+              ? { label: typeof parsed.meta.label === 'string' ? parsed.meta.label : undefined }
+              : undefined,
           });
         } else if (
           parsed.type === 'options_presented' &&

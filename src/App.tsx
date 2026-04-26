@@ -37,7 +37,7 @@ import {
 } from './api';
 import { useConversation, deriveProjectName } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
-import { syncStoreToTldraw } from './graph/sync';
+import { syncStoreToTldraw, repositionCardLabels } from './graph/sync';
 import { extractSpans } from './graph/extractSpans';
 import { stripMarkdown } from './graph/markdown';
 import type { TurnId } from './graph/types';
@@ -614,6 +614,7 @@ export function App() {
                   role: c.role,
                   parentId: c.parentId as TurnId,
                   content: c.content,
+                  meta: c.meta?.label ? { label: c.meta.label } : undefined,
                 });
               },
               onCardOptions: (o) => {
@@ -2615,6 +2616,9 @@ function relayoutAll(editor: Editor): void {
     const y = rootShape?.y ?? 0;
     assign(root, anchorX, y, 0);
   }
+  // After cards settle, drag the small classification-tag text shapes
+  // along with them.
+  repositionCardLabels(editor);
 }
 
 /**
@@ -2638,6 +2642,7 @@ function repositionChain(editor: Editor, sourceId: TurnId): void {
     }
     repositionChain(editor, child.id);
   }
+  repositionCardLabels(editor);
 }
 
 // `toRichText` and `TLShapeId` are still used by sync/edge creation —

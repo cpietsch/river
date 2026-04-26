@@ -94,6 +94,11 @@ export function syncStoreToTldraw(editor: Editor): void {
   // from its own canonical source. ──
   syncArrows(editor, turns, links);
 
+  // ── card annotations: a small native tldraw text shape per card that
+  // has meta.label. Tagged with meta.kind='card_label' + meta.cardId so
+  // the syncer can correlate them. Positioned by relayoutAll, not here.
+  syncCardLabels(editor, turns);
+
   // Final sweep: any arrow without both bindings is an orphan tldraw
   // didn't clean up after its bound cards were deleted. syncArrows
   // should delete these via its own logic, but in practice some survive
@@ -301,6 +306,115 @@ function createLinkArrow(
     });
   } catch (err) {
     console.warn('createLinkArrow failed', err);
+  }
+}
+
+// Native tldraw text shapes used as small classification labels above each
+// card. Tagged with meta.kind='card_label' + meta.cardId so the syncer can
+// correlate them. Position is set here at create time and refreshed by the
+// relayout pass when card positions change.
+function syncCardLabels(
+  editor: Editor,
+  turns: Record<TurnId, Turn>,
+): void {
+  const wantLabels = new Map<TurnId, string>();
+  for (const t of Object.values(turns)) {
+    const label = (t.meta as { label?: string } | undefined)?.label;
+    if (label && label.trim()) wantLabels.set(t.id, label.trim());
+  }
+
+  const haveLabels = new Map<TurnId, TLShapeId>();
+  const orphans: TLShapeId[] = [];
+  for (const s of editor.getCurrentPageShapes()) {
+    if (s.type !== 'text') continue;
+    const meta = (s.meta ?? {}) as { kind?: string; cardId?: string };
+    if (meta.kind !== 'card_label') continue;
+    const cardId = meta.cardId as TurnId | undefined;
+    if (!cardId || !wantLabels.has(cardId)) {
+      orphans.push(s.id);
+    } else {
+      haveLabels.set(cardId, s.id);
+    }
+  }
+  if (orphans.length) editor.deleteShapes(orphans);
+
+  for (const [cardId, label] of wantLabels) {
+    const cardShape = editor.getShape(cardId) as unknown as
+      | { x: number; y: number }
+      | undefined;
+    if (!cardShape) continue;
+    const text = label.toUpperCase();
+    const existing = haveLabels.get(cardId);
+    if (existing) {
+      const exShape = editor.getShape(existing) as
+        | { props: { richText: unknown }; x: number; y: number }
+        | undefined;
+      // Update text only if changed; tldraw richText is a JSON tree so we
+      // don't try to deep-compare — just write the new value when the raw
+      // label string differs from the cached one we stored on meta.label.
+      const exMeta = exShape
+        ? (editor.getShape(existing)?.meta as { label?: string } | undefined)
+        : undefined;
+      if (exMeta?.label !== label) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        editor.updateShape({
+          id: existing,
+          type: 'text',
+          props: { richText: toRichText(text) },
+          meta: { kind: 'card_label', cardId, label } as unknown as any,
+        });
+      }
+    } else {
+      const labelId = createShapeId();
+      try {
+        // NOTE: deliberately not isLocked. tldraw's editor.updateShape
+        // silently no-ops on locked shapes, which breaks repositioning
+        // when relayout moves the parent card. Users can't drag anyway —
+        // the editor is hard-locked to the hand tool elsewhere.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        editor.createShape({
+          id: labelId,
+          type: 'text',
+          x: cardShape.x,
+          y: cardShape.y - 20,
+          meta: { kind: 'card_label', cardId, label } as unknown as any,
+          props: {
+            richText: toRichText(text),
+            color: 'grey',
+            font: 'sans',
+            size: 's',
+            autoSize: true,
+            scale: 0.55,
+          },
+        });
+      } catch (err) {
+        console.warn('syncCardLabels: createShape failed', err);
+      }
+    }
+  }
+}
+
+/**
+ * Re-position the card_label text shapes to sit just above their card.
+ * Called by App.relayoutAll after card positions are written.
+ */
+export function repositionCardLabels(editor: Editor): void {
+  for (const s of editor.getCurrentPageShapes()) {
+    if (s.type !== 'text') continue;
+    const meta = (s.meta ?? {}) as { kind?: string; cardId?: string };
+    if (meta.kind !== 'card_label' || !meta.cardId) continue;
+    const card = editor.getShape(meta.cardId as TLShapeId) as
+      | { x: number; y: number }
+      | undefined;
+    if (!card) continue;
+    const targetX = card.x;
+    const targetY = card.y - 20;
+    if (
+      Math.abs((s as unknown as { x: number }).x - targetX) >= 1 ||
+      Math.abs((s as unknown as { y: number }).y - targetY) >= 1
+    ) {
+      editor.updateShape({ id: s.id, type: 'text', x: targetX, y: targetY });
+    }
   }
 }
 

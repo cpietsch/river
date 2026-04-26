@@ -376,6 +376,45 @@ app.post('/api/generate', async (req, res) => {
       logEvent('project.create_failed', { projectId, message: err?.message });
     }
   }
+
+  // Persist the user turn (the message the client just sent) and the
+  // assistant turn shell (responseCardId, marked streaming) so the DB
+  // mirrors the canvas as the conversation grows. The user turn is the
+  // last id in pathIds; its parent is the second-to-last (or null for the
+  // root turn).
+  if (projectId && db.getProject(projectId)) {
+    try {
+      const ids = Array.isArray(pathIds) ? pathIds : [];
+      const userTurnId = ids[ids.length - 1];
+      const userParentId = ids.length >= 2 ? ids[ids.length - 2] : null;
+      if (userTurnId) {
+        db.upsertTurn({
+          id: userTurnId,
+          projectId,
+          role: 'user',
+          content: input,
+          parentId: userParentId,
+          emphasis: 1,
+          streaming: false,
+          meta: {},
+        });
+      }
+      if (responseCardId) {
+        db.upsertTurn({
+          id: responseCardId,
+          projectId,
+          role: 'assistant',
+          content: '',
+          parentId: userTurnId ?? null,
+          emphasis: 1,
+          streaming: true,
+          meta: {},
+        });
+      }
+    } catch (err) {
+      logEvent('db.turn_seed_error', { projectId, message: err?.message });
+    }
+  }
   if (!input.trim()) {
     res.status(400).json({ error: 'input required' });
     return;
@@ -519,6 +558,7 @@ app.post('/api/generate', async (req, res) => {
     // Track which agent.message blocks we've already emitted so re-emitted
     // event versions (e.g. queued → processed) don't duplicate text.
     let lastEmitted = '';
+    let assistantBuffer = '';
     for await (const event of stream) {
       // Forward agent text. agent.message events carry full content arrays;
       // we emit the concatenated text as one delta per event.
@@ -531,6 +571,9 @@ app.post('/api/generate', async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: 'delta', text: chunk })}\n\n`);
           lastEmitted = chunk;
           totalChars = chunk.length;
+          // Accumulate so we can persist the final assistant content to
+          // DB on stream end (Phase 0b/c — server now mirrors the canvas).
+          assistantBuffer += chunk;
         }
       }
       // Built-in tool use (web_search, web_fetch, bash, file ops...) — emit
@@ -995,6 +1038,31 @@ app.post('/api/generate', async (req, res) => {
           })}\n\n`,
         );
         break;
+      }
+    }
+    // Stream is done. Finalize the assistant turn in DB with the full
+    // content + streaming=false so the next reload reflects the
+    // completed response.
+    if (projectId && responseCardId && db.getProject(projectId)) {
+      try {
+        db.upsertTurn({
+          id: responseCardId,
+          projectId,
+          role: 'assistant',
+          content: assistantBuffer,
+          parentId:
+            Array.isArray(pathIds) && pathIds.length > 0
+              ? pathIds[pathIds.length - 1]
+              : null,
+          emphasis: 1,
+          streaming: false,
+          meta: {},
+        });
+      } catch (err) {
+        logEvent('db.assistant_finalize_error', {
+          projectId,
+          message: err?.message,
+        });
       }
     }
     res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);

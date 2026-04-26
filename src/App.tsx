@@ -20,13 +20,16 @@ import {
   fetchInfo,
   fetchLabels,
   fetchMemory,
+  fetchProjectState,
   logEvent,
+  migrateLocalState,
   streamGenerate,
   type AgentInfo,
   type ChatMessage,
   type AgentPrediction,
   type BranchProposal,
   type GraphSnapshot,
+  type ServerProjectState,
 } from './api';
 import { useConversation, deriveProjectName } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
@@ -36,6 +39,65 @@ import { stripMarkdown } from './graph/markdown';
 import type { TurnId } from './graph/types';
 
 const shapeUtils = [CardShapeUtil];
+
+/**
+ * Apply a server-side ProjectState to the local conversation store. Server
+ * is treated as source of truth on overlap (more recent agent mutations
+ * land server-side first); local-only turns / links / proposals survive
+ * since they'll be pushed up on the next migrate or per-mutation API call.
+ */
+function mergeRemoteState(remote: ServerProjectState): void {
+  const cur = useConversation.getState();
+  // Turns: union, server wins on conflict.
+  const merged: Record<TurnId, import('./graph/types').Turn> = { ...cur.turns };
+  for (const r of remote.turns) {
+    merged[r.id as TurnId] = {
+      id: r.id as TurnId,
+      role: r.role,
+      content: r.content,
+      parentId: (r.parentId ?? null) as TurnId | null,
+      emphasis: r.emphasis,
+      streaming: r.streaming,
+      meta: r.meta as import('./graph/types').TurnMeta,
+    };
+  }
+  // Links: server wins, local-only kept.
+  const linkMap = new Map<string, import('./graph/types').Link>();
+  for (const l of cur.links) linkMap.set(l.id, l);
+  for (const r of remote.links) {
+    linkMap.set(r.id, {
+      id: r.id,
+      fromId: r.fromId as TurnId,
+      toId: r.toId as TurnId,
+      kind: r.kind,
+    });
+  }
+  // Proposals: same union pattern.
+  const proposalMap = new Map<string, BranchProposal>();
+  for (const p of cur.proposals) proposalMap.set(p.proposalId, p);
+  for (const r of remote.proposals) {
+    proposalMap.set(r.id, {
+      proposalId: r.id,
+      parentId: r.parentId,
+      prompt: r.prompt,
+      rationale: r.rationale,
+    });
+  }
+  useConversation.setState({
+    turns: merged,
+    links: Array.from(linkMap.values()),
+    proposals: Array.from(proposalMap.values()),
+    // Server's session id wins if present (it's authoritative — agent v
+    // changes flow through the server).
+    projectSessionId: remote.project.sessionId ?? cur.projectSessionId,
+  });
+  logEvent('client.remote_merged', {
+    projectId: remote.project.id,
+    serverTurns: remote.turns.length,
+    serverLinks: remote.links.length,
+    serverProposals: remote.proposals.length,
+  });
+}
 
 const SMOOTH_CAMERA = {
   animation: { duration: 500, easing: EASINGS.easeOutCubic },
@@ -304,6 +366,56 @@ export function App() {
     useConversation.getState().pruneStaleProposals();
     useConversation.getState().pruneStaleLinks();
   }, [refreshLabels]);
+
+  // Phase 0c: server-side canvas sync on mount. Two phases:
+  //   1. If the server doesn't yet know about this project (and any
+  //      archived projects), POST /api/migrate to seed it from the
+  //      client's persisted localStorage state.
+  //   2. Fetch the active project's canonical state from the server and
+  //      merge it into the local store (server wins on overlap; local-
+  //      only turns survive). This is how the user sees agent mutations
+  //      that happened while they were closed (or in another tab once
+  //      Phase 0d adds WebSocket broadcasts).
+  const syncedRef = useRef(false);
+  useEffect(() => {
+    if (syncedRef.current) return;
+    syncedRef.current = true;
+    void (async () => {
+      const state = useConversation.getState();
+      // Migrate any localStorage state that the server hasn't seen.
+      // Idempotent server-side: existing project ids skip silently.
+      try {
+        const archive = state.archive.map((a) => ({
+          id: a.id,
+          name: a.name,
+          sessionId: a.sessionId,
+          turns: a.turns,
+        }));
+        const active = {
+          id: state.activeProjectId,
+          name: deriveProjectName(state.turns),
+          sessionId: state.projectSessionId,
+          turns: state.turns,
+          links: state.links,
+          proposals: state.proposals,
+        };
+        await migrateLocalState({ active, archive });
+        logEvent('client.migrate_done', {
+          activeId: state.activeProjectId,
+          archiveCount: archive.length,
+        });
+      } catch (err) {
+        logEvent('client.migrate_error', {
+          message: (err as Error).message,
+        });
+      }
+      // Pull the server's current view of the active project. If anything
+      // changed while we were away (agent worked in the background, other
+      // tab made changes, etc.), the local store catches up here.
+      const remote = await fetchProjectState(state.activeProjectId);
+      if (remote) mergeRemoteState(remote);
+    })();
+  }, []);
 
   const runTurnFrom = useCallback(
     async (

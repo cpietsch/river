@@ -300,6 +300,112 @@ export async function deleteSession(sessionId: string): Promise<void> {
   }
 }
 
+// ── Server-side canvas state (Phase 0) ─────────────────────────────────
+
+export type ServerProject = {
+  id: string;
+  name: string;
+  sessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ServerTurn = {
+  id: string;
+  projectId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  parentId: string | null;
+  emphasis: number;
+  streaming: boolean;
+  meta: Record<string, unknown>;
+  createdAt: number;
+};
+
+export type ServerLink = {
+  id: string;
+  projectId: string;
+  fromId: string;
+  toId: string;
+  kind: string;
+  createdAt: number;
+};
+
+export type ServerProposal = {
+  id: string;
+  projectId: string;
+  parentId: string;
+  prompt: string;
+  rationale: string;
+  createdAt: number;
+};
+
+export type ServerProjectState = {
+  project: ServerProject;
+  turns: ServerTurn[];
+  links: ServerLink[];
+  proposals: ServerProposal[];
+};
+
+/** List every project the server knows about. */
+export async function fetchProjects(): Promise<ServerProject[]> {
+  try {
+    const res = await fetch('/api/projects');
+    if (!res.ok) return [];
+    const data = (await res.json()) as { projects?: ServerProject[] };
+    return data.projects ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Full canvas state for one project. Returns null if the server hasn't
+ *  heard of this project yet (e.g. fresh canvas pre-first-turn). */
+export async function fetchProjectState(
+  projectId: string,
+): Promise<ServerProjectState | null> {
+  try {
+    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`+'/state');
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return (await res.json()) as ServerProjectState;
+  } catch {
+    return null;
+  }
+}
+
+/** One-shot migration: push the client's existing localStorage shape up
+ *  to the server. Idempotent — projects that already exist server-side
+ *  are skipped. */
+export async function migrateLocalState(payload: {
+  active?: {
+    id: string;
+    name?: string;
+    sessionId?: string | null;
+    turns: Record<string, unknown>;
+    links?: unknown[];
+    proposals?: unknown[];
+  };
+  archive?: Array<{
+    id: string;
+    name: string;
+    sessionId: string | null;
+    turns: Record<string, unknown>;
+  }>;
+}): Promise<{ created: string[]; skipped: string[] }> {
+  try {
+    const res = await fetch('/api/migrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return { created: [], skipped: [] };
+    return (await res.json()) as { created: string[]; skipped: string[] };
+  } catch {
+    return { created: [], skipped: [] };
+  }
+}
+
 // Live agent + environment metadata, shown in the projects menu footer.
 export type AgentInfo = {
   agentId: string | null;

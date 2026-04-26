@@ -1608,6 +1608,14 @@ export function App() {
         )}
       </div>
 
+      {/* Branch + buttons rendered as a screen-space overlay above the
+          tldraw canvas. Lives outside the card's HTMLContainer because
+          tldraw's per-shape z-stack races with arrow rendering — the
+          arrow's div would paint over a CSS-positioned + button inside
+          the card. As a separate React layer, the + sits above
+          everything tldraw draws. */}
+      <BranchPlusOverlay editorRef={editorRef} branchFrom={branchFrom} />
+
       {/* Top-right floating panel: agent's branch proposals */}
       {proposals.length > 0 && (
         <ProposalsPanel
@@ -1734,6 +1742,172 @@ const toolbarBtn: React.CSSProperties = {
   minHeight: 40,
 };
 
+
+/* ─── Branch + button overlay ─── */
+
+/**
+ * Screen-space overlay that renders a small + button just below every
+ * card on the canvas. Lives outside tldraw's shape system so its
+ * stacking is independent of tldraw's per-shape z-order — the + always
+ * paints on top of arrows, no matter what indices tldraw assigns.
+ *
+ * Listens to the editor's store + camera and re-renders whenever
+ * shapes or the viewport change. Cheap because the overlay is a flat
+ * list of buttons; for normal canvases (10-50 cards) the cost is
+ * negligible.
+ */
+function BranchPlusOverlay({
+  editorRef,
+  branchFrom,
+}: {
+  editorRef: React.MutableRefObject<Editor | null>;
+  branchFrom: (id: TurnId) => void;
+}) {
+  // Track the cards we want a + for. We only re-render this list when
+  // the SET of cards changes (id list changes), not on every camera
+  // tick — those are handled by per-button rAF DOM updates so React
+  // doesn't reconcile thousands of times per second during pan/zoom.
+  const [cardIds, setCardIds] = useState<TurnId[]>([]);
+  useEffect(() => {
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
+    const sync = (editor: Editor) => {
+      const ids = editor
+        .getCurrentPageShapes()
+        .filter((s) => s.type === 'card')
+        .map((s) => s.id as TurnId);
+      setCardIds((prev) => {
+        if (prev.length === ids.length && prev.every((p, i) => p === ids[i])) return prev;
+        return ids;
+      });
+    };
+    const wait = () => {
+      if (cancelled) return;
+      const editor = editorRef.current;
+      if (!editor) {
+        // editorRef gets populated after Tldraw mounts; retry on the
+        // next frame until it's ready.
+        requestAnimationFrame(wait);
+        return;
+      }
+      sync(editor);
+      unsub = editor.store.listen(() => sync(editor), {
+        source: 'all',
+        scope: 'all',
+      });
+    };
+    wait();
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
+  }, [editorRef]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 800,
+      }}
+    >
+      {cardIds.map((id) => (
+        <BranchPlusButtonOverlay
+          key={id}
+          editorRef={editorRef}
+          cardId={id}
+          onClick={() => branchFrom(id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function BranchPlusButtonOverlay({
+  editorRef,
+  cardId,
+  onClick,
+}: {
+  editorRef: React.MutableRefObject<Editor | null>;
+  cardId: TurnId;
+  onClick: () => void;
+}) {
+  const ref = useRef<HTMLButtonElement | null>(null);
+  const [hover, setHover] = useState(false);
+  // Position the button via direct DOM writes on every animation frame
+  // so it follows tldraw's camera and card-position changes without
+  // needing React to reconcile. tldraw doesn't emit a clean "frame"
+  // event we can hook, and store listeners miss some camera updates.
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const editor = editorRef.current;
+      const el = ref.current;
+      if (editor && el) {
+        const card = editor.getShape(cardId) as unknown as CardShape | undefined;
+        if (card) {
+          const pageX = card.x + card.props.w / 2;
+          const pageY = card.y + card.props.h + 8;
+          const p = editor.pageToScreen({ x: pageX, y: pageY });
+          el.style.transform = `translate(${p.x - 11}px, ${p.y - 11}px)`;
+          el.style.display = '';
+        } else {
+          el.style.display = 'none';
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [editorRef, cardId]);
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label="branch"
+      title="Branch from this card"
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        onClick();
+      }}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: 0,
+        width: 22,
+        height: 22,
+        padding: 0,
+        background: '#fff',
+        border: `1px solid ${hover ? '#666' : '#bbb'}`,
+        borderRadius: 999,
+        color: hover ? '#111' : '#777',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        boxShadow: hover ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
+        transition: 'color 120ms, border-color 120ms, box-shadow 120ms',
+        WebkitTapHighlightColor: 'transparent',
+        pointerEvents: 'auto',
+        willChange: 'transform',
+      }}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path
+          d="M12 5v14M5 12h14"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    </button>
+  );
+}
 
 /* ─── Branch proposals panel ─── */
 

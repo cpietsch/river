@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   HTMLContainer,
   Rectangle2d,
@@ -421,12 +421,11 @@ function CardBody({ shape }: { shape: CardShape }) {
         </IconButton>
       </div>
 
-      {/* Branch affordance — a + button just below the card. Sits in the
-          gap between this card and any child, on top of the arrow line.
-          Tapping spawns a new branch (child user input) under this card.
-          Outside the card visually so it reads as "add another path from
-          here" rather than as a card action. */}
-      <BranchPlusButton onClick={() => actions?.branchFrom(shape.id)} />
+      {/* The branch + button is rendered by App.tsx as a screen-space
+          overlay above the tldraw canvas (BranchPlusOverlay), not as
+          part of this shape's HTMLContainer. This avoids a tldraw
+          z-order race where arrow shapes paint over CSS-positioned
+          children of cards, leaving the + visually buried. */}
     </HTMLContainer>
   );
 }
@@ -462,53 +461,6 @@ function IconButton({
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
         {children}
-      </svg>
-    </button>
-  );
-}
-
-function BranchPlusButton({ onClick }: { onClick: () => void }) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      aria-label="branch"
-      title="Branch from this card"
-      onPointerDown={tap(onClick)}
-      onPointerEnter={() => setHover(true)}
-      onPointerLeave={() => setHover(false)}
-      style={{
-        position: 'absolute',
-        // Centered on the parent→child arrow column, but pulled up close to
-        // the card edge so it sits at the top of the gap — above the visible
-        // arrow shaft, not floating in the middle of it.
-        bottom: -16,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 22,
-        height: 22,
-        padding: 0,
-        background: '#fff',
-        border: `1px solid ${hover ? '#666' : '#bbb'}`,
-        borderRadius: 999,
-        color: hover ? '#111' : '#777',
-        cursor: 'pointer',
-        transition: 'color 120ms, border-color 120ms, box-shadow 120ms',
-        WebkitTapHighlightColor: 'transparent',
-        boxShadow: hover ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
-        zIndex: 2,
-      }}
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path
-          d="M12 5v14M5 12h14"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-        />
       </svg>
     </button>
   );

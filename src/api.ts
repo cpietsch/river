@@ -383,9 +383,10 @@ export async function fetchProjectState(
 // devices and the background worker (Phase 1) read from.
 
 /** Upsert one turn server-side. Used after createTurn, setEmphasis,
- *  setContent (when content stops streaming), branchFrom, etc. */
+ *  setContent (when content stops streaming), branchFrom, etc. No-op
+ *  when projectId is null (active project not yet bootstrapped). */
 export async function upsertTurnRemote(
-  projectId: string,
+  projectId: string | null,
   turn: {
     id: string;
     role: 'user' | 'assistant';
@@ -396,6 +397,7 @@ export async function upsertTurnRemote(
     meta?: Record<string, unknown>;
   },
 ): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(`/api/projects/${encodeURIComponent(projectId)}/turns`, {
       method: 'POST',
@@ -409,9 +411,10 @@ export async function upsertTurnRemote(
 
 /** Cascade-delete a subtree of turns. */
 export async function deleteSubtreeRemote(
-  projectId: string,
+  projectId: string | null,
   turnId: string,
 ): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/turns/${encodeURIComponent(turnId)}`,
@@ -425,9 +428,10 @@ export async function deleteSubtreeRemote(
 /** Drop a pending branch proposal server-side (after the user accepts
  *  or dismisses it). */
 export async function removeProposalRemote(
-  projectId: string,
+  projectId: string | null,
   proposalId: string,
 ): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}`,
@@ -440,9 +444,10 @@ export async function removeProposalRemote(
 
 /** Drop a link server-side. */
 export async function removeLinkRemote(
-  projectId: string,
+  projectId: string | null,
   linkId: string,
 ): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
@@ -455,9 +460,10 @@ export async function removeLinkRemote(
 
 /** Patch a project: rename, set/clear sessionId. */
 export async function patchProjectRemote(
-  projectId: string,
+  projectId: string | null,
   patch: { name?: string; sessionId?: string | null },
 ): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: 'PATCH',
@@ -475,8 +481,9 @@ export async function patchProjectRemote(
  *  channel; the caller doesn't need to consume the response shape, just
  *  watch the canvas update. */
 export async function wakeProject(
-  projectId: string,
+  projectId: string | null,
 ): Promise<{ ok: boolean; content?: string; error?: string }> {
+  if (!projectId) return { ok: false, error: 'no active project' };
   try {
     const res = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/wake`,
@@ -494,7 +501,8 @@ export async function wakeProject(
 }
 
 /** Cascade-delete a project (turns, links, proposals all go). */
-export async function deleteProjectRemote(projectId: string): Promise<void> {
+export async function deleteProjectRemote(projectId: string | null): Promise<void> {
+  if (!projectId) return;
   try {
     await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: 'DELETE',

@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import yaml from 'yaml';
 import { WebSocketServer } from 'ws';
 import * as db from './db.js';
 
@@ -40,6 +41,18 @@ const ENV_ID = process.env.ENV_ID;
 // into the container at /mnt/memory/river-2-memory/ — the agent uses the
 // regular file tools (read/write/edit/glob) to interact.
 const MEMORY_STORE_ID = process.env.MEMORY_STORE_ID;
+
+// Per-project agent template — same YAML scripts/agent.yml that
+// `npm run setup-agent` applies. We read it once at server start and
+// re-use the parsed config when provisioning agents per-project on
+// project creation.
+const AGENT_YAML_PATH = path.resolve(process.cwd(), 'scripts/agent.yml');
+let AGENT_TEMPLATE = null;
+try {
+  AGENT_TEMPLATE = yaml.parse(fs.readFileSync(AGENT_YAML_PATH, 'utf8'));
+} catch (err) {
+  console.warn(`! could not load ${AGENT_YAML_PATH}:`, err?.message);
+}
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
@@ -484,8 +497,12 @@ app.post('/api/generate', async (req, res) => {
     // is wasted overhead. If the id is genuinely bad the events.send call
     // below will throw and we fall back into a fresh-session retry.
     if (!sessionId) {
+      // Prefer the project's per-project agent_id; fall back to the env
+      // AGENT_ID for projects created before per-project provisioning.
+      const projectRow = projectId ? db.getProject(projectId) : null;
+      const agentForSession = projectRow?.agentId || AGENT_ID;
       const sessionParams = {
-        agent: AGENT_ID,
+        agent: agentForSession,
         environment_id: ENV_ID,
         title: input.trim().slice(0, 60),
       };
@@ -537,7 +554,9 @@ app.post('/api/generate', async (req, res) => {
       });
       // Fall back: mint a new session, swap to the full kickoff (the new
       // session has no history), tell the client.
-      const sessionParams = { agent: AGENT_ID, environment_id: ENV_ID, title: input.trim().slice(0, 60) };
+      const projectRow = projectId ? db.getProject(projectId) : null;
+      const agentForSession = projectRow?.agentId || AGENT_ID;
+      const sessionParams = { agent: agentForSession, environment_id: ENV_ID, title: input.trim().slice(0, 60) };
       if (MEMORY_STORE_ID) {
         sessionParams.resources = [
           { type: 'memory_store', memory_store_id: MEMORY_STORE_ID, access: 'read_write', instructions: 'Long-term memory across all river-2 conversations.' },
@@ -1970,17 +1989,58 @@ app.get('/api/projects', (_req, res) => {
   res.json({ projects: db.listProjects() });
 });
 
-app.post('/api/projects', (req, res) => {
-  const { id, name, sessionId } = req.body ?? {};
-  if (!id || typeof id !== 'string' || !id.startsWith('proj_')) {
-    res.status(400).json({ error: 'id (proj_*) required' });
+/**
+ * Provision a fresh Anthropic agent for a new project. Uses scripts/agent.yml
+ * as the template; overrides `name` to be project-scoped so agents are
+ * distinguishable in dashboards. Returns the new agent id, or null if
+ * provisioning failed (the project still gets created; subsequent turns
+ * fall back to env AGENT_ID until a manual recovery).
+ */
+async function provisionProjectAgent(projectId) {
+  if (!AGENT_TEMPLATE) return null;
+  try {
+    const config = {
+      ...AGENT_TEMPLATE,
+      name: `river-2 · ${projectId}`,
+    };
+    const agent = await anthropic.beta.agents.create(config);
+    logEvent('agent.provisioned', { projectId, agentId: agent.id });
+    return agent.id;
+  } catch (err) {
+    logEvent('agent.provision_failed', {
+      projectId,
+      message: String(err?.message ?? err),
+    });
+    return null;
+  }
+}
+
+function makeProjectId() {
+  const a = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let body = '';
+  for (let i = 0; i < 12; i++) body += a[Math.floor(Math.random() * a.length)];
+  return `proj_${body}`;
+}
+
+app.post('/api/projects', async (req, res) => {
+  const { id: incomingId, name } = req.body ?? {};
+  let id = incomingId;
+  if (id && (typeof id !== 'string' || !id.startsWith('proj_'))) {
+    res.status(400).json({ error: 'id (proj_*) invalid' });
     return;
   }
-  if (db.getProject(id)) {
+  if (id && db.getProject(id)) {
     res.status(409).json({ error: 'project already exists' });
     return;
   }
-  res.json({ project: db.createProject({ id, name, sessionId }) });
+  if (!id) id = makeProjectId();
+  // Per-project agent provisioning happens on project create. The
+  // resulting agent_id sits on the project row; /api/generate uses it
+  // to scope sessions, so each canvas has its own immutable, versioned
+  // agent config.
+  const agentId = await provisionProjectAgent(id);
+  const project = db.createProject({ id, name, agentId });
+  res.json({ project });
 });
 
 app.get('/api/projects/:id/state', (req, res) => {
@@ -2010,11 +2070,20 @@ app.patch('/api/projects/:id', (req, res) => {
   res.json({ project: db.getProject(req.params.id) });
 });
 
-app.delete('/api/projects/:id', (req, res) => {
+app.delete('/api/projects/:id', async (req, res) => {
   const proj = db.getProject(req.params.id);
   if (!proj) {
     res.status(404).json({ error: 'project not found' });
     return;
+  }
+  // Best-effort: clean up the project's per-project agent + session on
+  // Anthropic's side. Errors here don't block the local DB delete; the
+  // user wants the canvas gone now and orphan agents are recoverable.
+  if (proj.sessionId) {
+    try { await anthropic.beta.sessions.delete(proj.sessionId); } catch (_) {}
+  }
+  if (proj.agentId && proj.agentId !== AGENT_ID) {
+    try { await anthropic.beta.agents.delete(proj.agentId); } catch (_) {}
   }
   db.deleteProject(req.params.id);
   broadcast(req.params.id, { type: 'project_deleted', projectId: req.params.id });

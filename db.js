@@ -29,6 +29,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL DEFAULT 'untitled canvas',
+    agent_id TEXT,
     session_id TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -78,21 +79,25 @@ db.exec(`
 // ── Project queries ──────────────────────────────────────────────────────
 
 const stmtListProjects = db.prepare(
-  `SELECT id, name, session_id AS sessionId, created_at AS createdAt,
-          updated_at AS updatedAt
+  `SELECT id, name, agent_id AS agentId, session_id AS sessionId,
+          created_at AS createdAt, updated_at AS updatedAt
    FROM projects
    ORDER BY updated_at DESC`,
 );
 
 const stmtGetProject = db.prepare(
-  `SELECT id, name, session_id AS sessionId, created_at AS createdAt,
-          updated_at AS updatedAt
+  `SELECT id, name, agent_id AS agentId, session_id AS sessionId,
+          created_at AS createdAt, updated_at AS updatedAt
    FROM projects WHERE id = ?`,
 );
 
 const stmtInsertProject = db.prepare(
-  `INSERT INTO projects (id, name, session_id, created_at, updated_at)
-   VALUES (@id, @name, @sessionId, @createdAt, @updatedAt)`,
+  `INSERT INTO projects (id, name, agent_id, session_id, created_at, updated_at)
+   VALUES (@id, @name, @agentId, @sessionId, @createdAt, @updatedAt)`,
+);
+
+const stmtSetProjectAgent = db.prepare(
+  `UPDATE projects SET agent_id = ?, updated_at = ? WHERE id = ?`,
 );
 
 const stmtUpdateProject = db.prepare(
@@ -178,16 +183,21 @@ export function getProject(id) {
   return stmtGetProject.get(id);
 }
 
-export function createProject({ id, name, sessionId = null }) {
+export function createProject({ id, name, agentId = null, sessionId = null }) {
   const now = Date.now();
   stmtInsertProject.run({
     id,
     name: name ?? 'untitled canvas',
+    agentId,
     sessionId,
     createdAt: now,
     updatedAt: now,
   });
   return getProject(id);
+}
+
+export function setProjectAgent(id, agentId) {
+  stmtSetProjectAgent.run(agentId, Date.now(), id);
 }
 
 export function renameProject(id, name) {

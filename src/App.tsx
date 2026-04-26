@@ -22,9 +22,9 @@ import {
   fetchInfo,
   fetchLabels,
   fetchMemory,
+  fetchProjects,
   fetchProjectState,
   logEvent,
-  migrateLocalState,
   patchProjectRemote,
   removeProposalRemote,
   streamGenerate,
@@ -35,7 +35,6 @@ import {
   type AgentPrediction,
   type BranchProposal,
   type GraphSnapshot,
-  type ServerProjectState,
 } from './api';
 import { useConversation, deriveProjectName } from './graph/store';
 import { useTldrawSync } from './graph/useTldrawSync';
@@ -46,64 +45,6 @@ import type { TurnId } from './graph/types';
 
 const shapeUtils = [CardShapeUtil];
 
-/**
- * Apply a server-side ProjectState to the local conversation store. Server
- * is treated as source of truth on overlap (more recent agent mutations
- * land server-side first); local-only turns / links / proposals survive
- * since they'll be pushed up on the next migrate or per-mutation API call.
- */
-function mergeRemoteState(remote: ServerProjectState): void {
-  const cur = useConversation.getState();
-  // Turns: union, server wins on conflict.
-  const merged: Record<TurnId, import('./graph/types').Turn> = { ...cur.turns };
-  for (const r of remote.turns) {
-    merged[r.id as TurnId] = {
-      id: r.id as TurnId,
-      role: r.role,
-      content: r.content,
-      parentId: (r.parentId ?? null) as TurnId | null,
-      emphasis: r.emphasis,
-      streaming: r.streaming,
-      meta: r.meta as import('./graph/types').TurnMeta,
-    };
-  }
-  // Links: server wins, local-only kept.
-  const linkMap = new Map<string, import('./graph/types').Link>();
-  for (const l of cur.links) linkMap.set(l.id, l);
-  for (const r of remote.links) {
-    linkMap.set(r.id, {
-      id: r.id,
-      fromId: r.fromId as TurnId,
-      toId: r.toId as TurnId,
-      kind: r.kind,
-    });
-  }
-  // Proposals: same union pattern.
-  const proposalMap = new Map<string, BranchProposal>();
-  for (const p of cur.proposals) proposalMap.set(p.proposalId, p);
-  for (const r of remote.proposals) {
-    proposalMap.set(r.id, {
-      proposalId: r.id,
-      parentId: r.parentId,
-      prompt: r.prompt,
-      rationale: r.rationale,
-    });
-  }
-  useConversation.setState({
-    turns: merged,
-    links: Array.from(linkMap.values()),
-    proposals: Array.from(proposalMap.values()),
-    // Server's session id wins if present (it's authoritative — agent v
-    // changes flow through the server).
-    projectSessionId: remote.project.sessionId ?? cur.projectSessionId,
-  });
-  logEvent('client.remote_merged', {
-    projectId: remote.project.id,
-    serverTurns: remote.turns.length,
-    serverLinks: remote.links.length,
-    serverProposals: remote.proposals.length,
-  });
-}
 
 const SMOOTH_CAMERA = {
   animation: { duration: 500, easing: EASINGS.easeOutCubic },
@@ -150,8 +91,16 @@ export function App() {
       if (info) setAgentInfo(info);
     });
   }, []);
-  const activeProjectName = useConversation((s) => deriveProjectName(s.turns));
-  const archivedProjects = useConversation((s) => s.archive);
+  const activeProjectName = useConversation((s) => {
+    const fromList = s.projects.find((p) => p.id === s.activeProjectId);
+    if (fromList?.name && fromList.name !== 'untitled canvas') return fromList.name;
+    return deriveProjectName(s.turns);
+  });
+  // The "other projects" list shown in the projects menu: every server-
+  // side project except the one this tab is currently looking at.
+  const otherProjects = useConversation((s) =>
+    s.projects.filter((p) => p.id !== s.activeProjectId),
+  );
   const activeSessionId = useConversation((s) => s.projectSessionId);
 
   // Bridge the store onto tldraw. Whenever the conversation graph changes,
@@ -502,46 +451,8 @@ export function App() {
     };
   }, [activeProjectIdSel]);
 
-  const syncedRef = useRef(false);
-  useEffect(() => {
-    if (syncedRef.current) return;
-    syncedRef.current = true;
-    void (async () => {
-      const state = useConversation.getState();
-      // Migrate any localStorage state that the server hasn't seen.
-      // Idempotent server-side: existing project ids skip silently.
-      try {
-        const archive = state.archive.map((a) => ({
-          id: a.id,
-          name: a.name,
-          sessionId: a.sessionId,
-          turns: a.turns,
-        }));
-        const active = {
-          id: state.activeProjectId,
-          name: deriveProjectName(state.turns),
-          sessionId: state.projectSessionId,
-          turns: state.turns,
-          links: state.links,
-          proposals: state.proposals,
-        };
-        await migrateLocalState({ active, archive });
-        logEvent('client.migrate_done', {
-          activeId: state.activeProjectId,
-          archiveCount: archive.length,
-        });
-      } catch (err) {
-        logEvent('client.migrate_error', {
-          message: (err as Error).message,
-        });
-      }
-      // Pull the server's current view of the active project. If anything
-      // changed while we were away (agent worked in the background, other
-      // tab made changes, etc.), the local store catches up here.
-      const remote = await fetchProjectState(state.activeProjectId);
-      if (remote) mergeRemoteState(remote);
-    })();
-  }, []);
+  // Mount-time bootstrap is defined later (after refreshProjects /
+  // switchToProject are declared) — see the useEffect below.
 
   const runTurnFrom = useCallback(
     async (
@@ -759,6 +670,19 @@ export function App() {
             parentId: assistantId,
           });
           setActiveId(nextId);
+          // Mirror to server so a second tab on this project sees the
+          // empty input card too (without this fix, it'd just sit
+          // client-side and the other tab would see the agent reply
+          // hanging with no follow-up input slot).
+          void upsertTurnRemote(useConversation.getState().activeProjectId, {
+            id: nextId,
+            role: 'user',
+            content: '',
+            parentId: assistantId,
+            emphasis: 1,
+            streaming: false,
+            meta: {},
+          });
 
           // Camera follows the just-finished assistant + the new empty input.
           // Read positions from the (now-synced) tldraw shapes.
@@ -1105,40 +1029,59 @@ export function App() {
     relayoutAll(editor);
   }, []);
 
-  const startNew = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const priorSession = useConversation.getState().projectSessionId;
-    logEvent('client.start_new', {
-      priorTurns: Object.keys(useConversation.getState().turns).length,
-      priorSession,
-    });
-    // Archive the current canvas — preserves its session so the user can
-    // jump back into it from the projects menu. Deletion is manual.
-    // archiveAndReset also clears proposals; no separate call needed.
-    useConversation.getState().archiveAndReset();
-    const id = useConversation
-      .getState()
-      .createTurn({ role: 'user', parentId: null });
-    setActiveId(id);
-    setInput(START_SEED);
-    repaintCanvas();
-    editor.centerOnPoint(
-      { x: CARD_WIDTH / 2, y: CARD_HEIGHT_MIN / 2 + 90 },
-      SMOOTH_CAMERA,
-    );
-  }, [repaintCanvas]);
+  // Refresh the global server-side project list. Called on mount and
+  // after any mutation that changes the list (create / delete / rename).
+  const refreshProjects = useCallback(async () => {
+    const list = await fetchProjects();
+    useConversation.getState().setProjects(list);
+    return list;
+  }, []);
 
-  const resumeProject = useCallback(
-    (archiveId: string) => {
+  // Switch the tab to a different project: clear the active canvas,
+  // flip activeProjectId, fetch the new state from the server, repaint
+  // tldraw. The WS subscription effect re-runs on activeProjectId
+  // change and resubscribes to the new project's channel.
+  const switchToProject = useCallback(
+    async (projectId: string) => {
       const editor = editorRef.current;
       if (!editor) return;
-      const ok = useConversation.getState().resumeArchived(archiveId);
-      // resumeArchived also clears proposals on swap.
-      if (!ok) return;
-      logEvent('client.resume_project', { archiveId });
-      // Re-seat active on the most recent empty user turn in the resumed
-      // canvas (mirrors handleMount logic), or the latest turn otherwise.
+      logEvent('client.switch_project', { projectId });
+      useConversation.getState().setActiveProjectId(projectId);
+      useConversation.getState().clearActiveCanvas();
+      const state = await fetchProjectState(projectId);
+      if (state) {
+        useConversation.getState().loadActiveCanvas({
+          turns: Object.fromEntries(
+            state.turns.map((t) => [
+              t.id,
+              {
+                id: t.id as TurnId,
+                role: t.role,
+                content: t.content,
+                parentId: (t.parentId ?? null) as TurnId | null,
+                emphasis: t.emphasis,
+                streaming: t.streaming,
+                meta: t.meta as import('./graph/types').TurnMeta,
+              },
+            ]),
+          ),
+          links: state.links.map((l) => ({
+            id: l.id,
+            fromId: l.fromId as TurnId,
+            toId: l.toId as TurnId,
+            kind: l.kind,
+          })),
+          proposals: state.proposals.map((p) => ({
+            proposalId: p.id,
+            parentId: p.parentId,
+            prompt: p.prompt,
+            rationale: p.rationale,
+          })),
+          projectSessionId: state.project.sessionId,
+        });
+      }
+      // Re-seat active on the most recent empty user turn (the input
+      // slot) if present, else the most recent turn.
       const turns = Object.values(useConversation.getState().turns);
       const lastEmpty = [...turns]
         .reverse()
@@ -1163,30 +1106,111 @@ export function App() {
     [repaintCanvas],
   );
 
-  // Manual deletion: remove the archived project from the store and
-  // best-effort DELETE its Managed Agent session server-side so the event
-  // log + container don't linger.
-  const deleteArchivedProject = useCallback((archiveId: string) => {
-    const target = useConversation
-      .getState()
-      .archive.find((a) => a.id === archiveId);
-    if (!target) return;
-    if (target.sessionId) void deleteSession(target.sessionId);
-    useConversation.getState().deleteArchived(archiveId);
-    void deleteProjectRemote(archiveId);
-    logEvent('client.delete_project', {
-      archiveId,
-      hadSession: !!target.sessionId,
-    });
-  }, []);
+  // Create a new canvas. Server provisions a fresh per-project agent;
+  // returns the new project shell. We then switch the tab to it.
+  const startNew = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    logEvent('client.start_new', {});
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'untitled canvas' }),
+      });
+      if (!res.ok) {
+        alert('failed to create project');
+        return;
+      }
+      const data = (await res.json()) as { project: { id: string } };
+      await refreshProjects();
+      // Switch immediately. The new project has no turns yet — the
+      // user's first input creates the user turn (locally + server-side
+      // via /api/generate's user-turn upsert).
+      useConversation.getState().setActiveProjectId(data.project.id);
+      useConversation.getState().clearActiveCanvas();
+      const id = useConversation
+        .getState()
+        .createTurn({ role: 'user', parentId: null });
+      // Persist that empty user input card to the server so a second
+      // tab opening the same project sees the input slot.
+      void upsertTurnRemote(data.project.id, {
+        id,
+        role: 'user',
+        content: '',
+        parentId: null,
+        emphasis: 1,
+        streaming: false,
+        meta: {},
+      });
+      setActiveId(id);
+      setInput(START_SEED);
+      repaintCanvas();
+      editor.centerOnPoint(
+        { x: CARD_WIDTH / 2, y: CARD_HEIGHT_MIN / 2 + 90 },
+        SMOOTH_CAMERA,
+      );
+    } catch (err) {
+      console.error('startNew failed:', err);
+    }
+  }, [repaintCanvas, refreshProjects]);
+
+  const deleteArchivedProject = useCallback(
+    async (projectId: string) => {
+      const target = useConversation
+        .getState()
+        .projects.find((p) => p.id === projectId);
+      if (!target) return;
+      if (target.sessionId) void deleteSession(target.sessionId);
+      void deleteProjectRemote(projectId);
+      logEvent('client.delete_project', {
+        projectId,
+        hadSession: !!target.sessionId,
+      });
+      await refreshProjects();
+    },
+    [refreshProjects],
+  );
 
   const renameArchivedProject = useCallback(
-    (archiveId: string, name: string) => {
-      useConversation.getState().renameArchived(archiveId, name);
-      void patchProjectRemote(archiveId, { name });
+    (projectId: string, name: string) => {
+      void patchProjectRemote(projectId, { name }).then(refreshProjects);
     },
-    [],
+    [refreshProjects],
   );
+
+  // Mount-time bootstrap. Server is the source of truth: list every
+  // project, decide which one this tab should look at (the persisted
+  // activeProjectId if it's still in the list, else the most recent
+  // one), fetch its state, populate the store. If the server has zero
+  // projects, create one automatically.
+  const bootstrappedRef = useRef(false);
+  useEffect(() => {
+    if (bootstrappedRef.current) return;
+    bootstrappedRef.current = true;
+    void (async () => {
+      const list = await refreshProjects();
+      const persisted = useConversation.getState().activeProjectId;
+      let targetId =
+        persisted && list.some((p) => p.id === persisted)
+          ? persisted
+          : list[0]?.id ?? null;
+      if (!targetId) {
+        const res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: 'untitled canvas' }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { project: { id: string } };
+          targetId = data.project.id;
+          await refreshProjects();
+        }
+      }
+      if (!targetId) return;
+      await switchToProject(targetId);
+    })();
+  }, [refreshProjects, switchToProject]);
 
   // Drop the active project's Managed Agent session so the next turn mints
   // a fresh one against the latest agent version. Keeps all canvas turns,
@@ -1430,7 +1454,7 @@ export function App() {
               activeName={activeProjectName}
               activeSessionId={activeSessionId}
               info={agentInfo}
-              archive={archivedProjects}
+              archive={otherProjects}
               wakeBusy={wakeBusy}
               onClose={() => setProjectsOpen(false)}
               onNew={() => {
@@ -1439,7 +1463,7 @@ export function App() {
               }}
               onResume={(id) => {
                 setProjectsOpen(false);
-                resumeProject(id);
+                void switchToProject(id);
               }}
               onResetSession={() => {
                 setProjectsOpen(false);
@@ -2026,7 +2050,7 @@ function ProjectsMenu({
   activeName: string;
   activeSessionId: string | null;
   info: AgentInfo | null;
-  archive: import('./graph/store').ArchivedProject[];
+  archive: import('./api').ServerProject[];
   wakeBusy: boolean;
   onClose: () => void;
   onNew: () => void;

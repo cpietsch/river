@@ -1,6 +1,34 @@
 # Demo turn sequence — portfolio canvas
 
-Project to resume: `proj_jr87l95cn5fd` (already has the "Pick A — invisibility" thread). All turns below land below or branch from existing cards. The canvas after this sequence will have a flag, an in-place edit, a lateral link, a multi-card output, and a parallel root stream — every move the script in DEMO.md needs to show.
+**Pre-warmed canvas: `proj_viw18nr4bf53`**. Already contains every demo move the script in `DEMO.md` needs. Resume it from the Projects menu when recording.
+
+## What's on the canvas right now
+
+**Left tree — the through-line investigation:**
+- Root: *"I'm working on the through-line for my portfolio site… What's the through-line, in one sentence?"*
+- Header response from the agent (one-paragraph framing of the territory)
+- **4 candidate framings as sibling cards** (created in one `create_cards` round-trip):
+  1. *You build instruments, not artifacts*
+  2. *The seam between systems is your subject*
+  3. *Your work lands first in the skin* — *(this one was edited in place from "You translate computation…" via `edit_card` after the user said "lead with the body")*
+  4. *Liveness is your design constraint*
+- **Lateral dashed link** between candidates 1 and 4, kind: *"same axis as"* (`link_cards`)
+- A 5th card synthesizing 1 and 4: *"Your work is built to be activated"* — this is the fused framing the agent drafted as prose.
+- **🚩 FLAGGED card on the fusion** — set by the autonomous wake while the user was away. Hover reason: *"Fuses candidates 1 and 4 into the most likely through-line — the load-bearing card if the user picks this direction."*
+- A short header card from the wake action
+- Active input slot at the leaf
+
+**Right tree — the about-page intro (parallel investigation):**
+- Right-click empty canvas → *New stream here* spawned this root
+- Root: *"Different angle — how should I introduce myself in plain prose on the about page, not as a list of projects?"*
+- Streamed response on how to write a self-introduction
+- Active input slot
+
+Both trees visible side-by-side after `zoomToFit` (or pan/zoom out manually).
+
+## Replaying the sequence
+
+If you need to re-create the canvas (e.g. on a different machine), here's the exact turn sequence. All turns below land below or branch from existing cards.
 
 ## Pre-state (already on canvas)
 

@@ -2497,7 +2497,7 @@ function ProjectsMenu({
                     textAlign: 'left',
                     WebkitTapHighlightColor: 'transparent',
                   }}
-                  title={`${p.name}\n(double-click to rename)`}
+                  title={`${p.derivedName ?? p.name}\n(double-click to rename)`}
                 >
                   <span
                     aria-hidden
@@ -2519,16 +2519,16 @@ function ProjectsMenu({
                       minWidth: 0,
                     }}
                   >
-                    {p.name}
+                    {p.derivedName ?? p.name}
                   </span>
                 </button>
               )}
               <button
                 type="button"
-                aria-label={`Delete ${p.name}`}
+                aria-label={`Delete ${p.derivedName ?? p.name}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (confirm(`Delete "${p.name}" and its session?`)) {
+                  if (confirm(`Delete "${p.derivedName ?? p.name}" and its session?`)) {
                     onDelete(p.id);
                   }
                 }}

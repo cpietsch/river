@@ -309,6 +309,13 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export type ServerProject = {
   id: string;
   name: string;
+  /**
+   * Server-derived friendly name from the project's first user turn with
+   * content. Present when `name` is the default "untitled canvas" and a
+   * better label can be computed; absent otherwise. Use `derivedName ?? name`
+   * for display.
+   */
+  derivedName?: string;
   sessionId: string | null;
   wakeIntent: string;
   createdAt: number;

@@ -2021,7 +2021,24 @@ app.get('/api/info', async (req, res) => {
 // live updates.
 
 app.get('/api/projects', (_req, res) => {
-  res.json({ projects: db.listProjects() });
+  // For each project that's still using the default "untitled canvas"
+  // name, derive a friendly label from the first user turn with content
+  // and attach it as `derivedName`. The client picks `derivedName ||
+  // name` for display so archived rows show the actual question rather
+  // than a placeholder. Cheap: one O(turns) scan per project, run only
+  // when the menu is opened.
+  const projects = db.listProjects().map((p) => {
+    if (p.name && p.name !== 'untitled canvas') return p;
+    const turns = db.listTurns(p.id);
+    const firstUser = turns.find(
+      (t) => t.role === 'user' && (t.content ?? '').trim().length > 0,
+    );
+    if (!firstUser) return p;
+    const raw = String(firstUser.content).replace(/\s+/g, ' ').trim();
+    const derivedName = raw.length > 60 ? raw.slice(0, 60).trimEnd() + '…' : raw;
+    return { ...p, derivedName };
+  });
+  res.json({ projects });
 });
 
 /**

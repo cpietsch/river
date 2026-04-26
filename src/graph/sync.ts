@@ -93,6 +93,19 @@ export function syncStoreToTldraw(editor: Editor): void {
   // per Link in the store), reconciled separately so each kind reads
   // from its own canonical source. ──
   syncArrows(editor, turns, links);
+
+  // Final sweep: any arrow without both bindings is an orphan tldraw
+  // didn't clean up after its bound cards were deleted. syncArrows
+  // should delete these via its own logic, but in practice some survive
+  // (tldraw appears to defer arrow deletion past the bindings-cleared
+  // state). Belt-and-suspenders deletion catches them.
+  const lingering: TLShapeId[] = [];
+  for (const s of editor.getCurrentPageShapes()) {
+    if (s.type !== 'arrow') continue;
+    const bs = editor.getBindingsFromShape(s, 'arrow');
+    if (bs.length < 2) lingering.push(s.id);
+  }
+  if (lingering.length) editor.deleteShapes(lingering);
 }
 
 function syncArrows(

@@ -133,10 +133,14 @@ export function App() {
 
     // The graph store is canonical. tldraw shapes that belong to a previous
     // schema (or that orphaned mid-stream) get wiped — the syncer will
-    // recreate exactly the shapes the store needs.
-    {
+    // recreate exactly the shapes the store needs. Two passes because
+    // tldraw can leave orphan arrows behind when their bound cards get
+    // deleted in the same batch (the bindings disappear but the arrow
+    // shapes survive into the next render).
+    for (let pass = 0; pass < 2; pass++) {
       const ids = editor.getCurrentPageShapes().map((s) => s.id);
-      if (ids.length > 0) editor.deleteShapes(ids);
+      if (ids.length === 0) break;
+      editor.deleteShapes(ids);
     }
 
     const { turns, createTurn, getTurn } = useConversation.getState();
@@ -1076,8 +1080,16 @@ export function App() {
   const repaintCanvas = useCallback(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const ids = editor.getCurrentPageShapes().map((s) => s.id);
-    if (ids.length > 0) editor.deleteShapes(ids);
+    // Two-pass nuke. tldraw can leave orphan arrows behind when their
+    // bound cards are deleted in the same batch — the bindings disappear
+    // but the arrow shapes themselves survive into the next render.
+    // Delete shapes, then re-query and delete anything still on the page
+    // before letting the syncer recreate from the store.
+    for (let pass = 0; pass < 2; pass++) {
+      const ids = editor.getCurrentPageShapes().map((s) => s.id);
+      if (ids.length === 0) break;
+      editor.deleteShapes(ids);
+    }
     syncStoreToTldraw(editor);
     relayoutAll(editor);
   }, []);
@@ -1441,7 +1453,6 @@ export function App() {
         shapeUtils={shapeUtils}
         components={components}
         onMount={handleMount}
-        persistenceKey="river-2-graph"
         hideUi
         inferDarkMode={false}
       />

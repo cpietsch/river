@@ -306,6 +306,7 @@ export type ServerProject = {
   id: string;
   name: string;
   sessionId: string | null;
+  wakeIntent: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -458,10 +459,10 @@ export async function removeLinkRemote(
   }
 }
 
-/** Patch a project: rename, set/clear sessionId. */
+/** Patch a project: rename, set/clear sessionId, set wakeIntent. */
 export async function patchProjectRemote(
   projectId: string | null,
-  patch: { name?: string; sessionId?: string | null },
+  patch: { name?: string; sessionId?: string | null; wakeIntent?: string },
 ): Promise<void> {
   if (!projectId) return;
   try {

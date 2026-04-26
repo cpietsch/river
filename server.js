@@ -1281,16 +1281,28 @@ app.delete('/api/session/:id', async (req, res) => {
 
 const wakeInFlight = new Set(); // projectIds with an in-flight wake
 
-function buildAutonomousKickoff(projectId, responseCardId, turns) {
+function buildAutonomousKickoff(projectId, responseCardId, turns, wakeIntent) {
   const rendered = Object.values(turns)
     .map(
       (t) =>
         `[${t.id}] role=${t.role} parent=${t.parentId ?? 'none'}\n${(t.content ?? '').trim()}`,
     )
     .join('\n\n---\n\n');
+  // Optional per-canvas direction the user wrote in the projects menu.
+  // When present, treat it as the load-bearing instruction for THIS wake;
+  // when absent, fall back to the generic survey-the-canvas behavior.
+  const intentBlock = wakeIntent && wakeIntent.trim()
+    ? `THE USER'S DIRECTION FOR THIS WAKE — what they want you to watch for between sessions:
+
+${wakeIntent.trim()}
+
+Take this as the focus. Choose a tending action that addresses this direction specifically. If nothing in the current canvas state genuinely earns an action under that direction, write a single short sentence saying so and end the turn — that's still useful, it's the keeper reporting back.
+
+`
+    : '';
   return `AUTONOMOUS WAKE — the user is NOT present right now. They will read what you do later.
 
-Look at the canvas (graph below) and your /mnt/memory/ store. Contribute ONE meaningful thing if you see something worth doing:
+${intentBlock}Look at the canvas (graph below) and your /mnt/memory/ store. Contribute ONE meaningful thing if you see something worth doing:
 - flag a turning point you missed earlier (flag_card)
 - draw a link between cards in different branches that touch the same idea (link_cards)
 - draft a card that elaborates an open question or refines a vague conclusion (create_card under the right parent)
@@ -1394,6 +1406,7 @@ async function runWakeForProject(projectId) {
       projectId,
       responseCardId,
       graphSnap.turns,
+      project.wakeIntent,
     );
     logEvent('wake.start', {
       projectId,
@@ -2053,7 +2066,7 @@ app.get('/api/projects/:id/state', (req, res) => {
 });
 
 app.patch('/api/projects/:id', (req, res) => {
-  const { name, sessionId } = req.body ?? {};
+  const { name, sessionId, wakeIntent } = req.body ?? {};
   const proj = db.getProject(req.params.id);
   if (!proj) {
     res.status(404).json({ error: 'project not found' });
@@ -2066,6 +2079,13 @@ app.patch('/api/projects/:id', (req, res) => {
   if (sessionId === null || typeof sessionId === 'string') {
     db.setProjectSession(req.params.id, sessionId);
     broadcast(req.params.id, { type: 'project_session_changed', sessionId });
+  }
+  if (typeof wakeIntent === 'string') {
+    db.setProjectWakeIntent(req.params.id, wakeIntent);
+    broadcast(req.params.id, {
+      type: 'project_wake_intent_changed',
+      wakeIntent,
+    });
   }
   res.json({ project: db.getProject(req.params.id) });
 });
@@ -2310,3 +2330,5 @@ httpServer.listen(PORT, () => {
   console.log(`river api on :${PORT}  main=${MAIN_MODEL}  mist=${MIST_MODEL}`);
 });
  
+
+// noop Sun Apr 26 19:59:04 CEST 2026

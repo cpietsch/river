@@ -106,6 +106,15 @@ export function App() {
     [projectsList, activeProjectIdSelRaw],
   );
   const activeSessionId = useConversation((s) => s.projectSessionId);
+  // Pull the wake-intent off the active project row from the projects
+  // list. The list is refreshed after every PATCH (`refreshProjects`)
+  // and the WS broadcasts `project_wake_intent_changed`, so this stays
+  // in sync without dedicated store wiring.
+  const activeWakeIntent = useMemo(
+    () =>
+      projectsList.find((p) => p.id === activeProjectIdSelRaw)?.wakeIntent ?? '',
+    [projectsList, activeProjectIdSelRaw],
+  );
 
   // Bridge the store onto tldraw. Whenever the conversation graph changes,
   // syncer reflects it onto the canvas. Structural changes (turn created /
@@ -1517,6 +1526,7 @@ export function App() {
             <ProjectsMenu
               activeName={activeProjectName}
               activeSessionId={activeSessionId}
+              activeWakeIntent={activeWakeIntent}
               info={agentInfo}
               archive={otherProjects}
               wakeBusy={wakeBusy}
@@ -1536,6 +1546,12 @@ export function App() {
               onWake={() => {
                 setProjectsOpen(false);
                 void wakeActive();
+              }}
+              onWakeIntentChange={(intent) => {
+                if (!activeProjectIdSelRaw) return;
+                void patchProjectRemote(activeProjectIdSelRaw, { wakeIntent: intent }).then(
+                  () => refreshProjects(),
+                );
               }}
               onDelete={deleteArchivedProject}
               onRename={renameArchivedProject}
@@ -1851,6 +1867,7 @@ function ProposalsPanel({
 function ProjectsMenu({
   activeName,
   activeSessionId,
+  activeWakeIntent,
   info,
   archive,
   wakeBusy,
@@ -1859,11 +1876,13 @@ function ProjectsMenu({
   onResume,
   onResetSession,
   onWake,
+  onWakeIntentChange,
   onDelete,
   onRename,
 }: {
   activeName: string;
   activeSessionId: string | null;
+  activeWakeIntent: string;
   info: AgentInfo | null;
   archive: import('./api').ServerProject[];
   wakeBusy: boolean;
@@ -1872,11 +1891,20 @@ function ProjectsMenu({
   onResume: (id: string) => void;
   onResetSession: () => void;
   onWake: () => void;
+  onWakeIntentChange: (intent: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
+  // Local draft for the wake intent textarea — committed on blur or Enter.
+  // The remote value lives on the project row server-side; activeWakeIntent
+  // here is the source of truth, and we sync the draft to it when the
+  // canvas changes.
+  const [intentDraft, setIntentDraft] = useState(activeWakeIntent);
+  useEffect(() => {
+    setIntentDraft(activeWakeIntent);
+  }, [activeWakeIntent]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2075,6 +2103,61 @@ function ProjectsMenu({
               </svg>
             </button>
           )}
+        </div>
+
+        {/* Wake intent — optional per-canvas direction the cartographer
+            uses on autonomous wakes. Empty by default; if filled, the
+            wake kickoff treats this as the focus for what to watch for
+            between sessions. */}
+        <div style={{ padding: '4px 10px 8px' }}>
+          <label
+            style={{
+              display: 'block',
+              fontSize: 11,
+              color: '#9a9590',
+              letterSpacing: 0.3,
+              textTransform: 'uppercase',
+              marginBottom: 4,
+            }}
+          >
+            wake direction
+          </label>
+          <textarea
+            value={intentDraft}
+            onChange={(e) => setIntentDraft(e.target.value)}
+            onBlur={() => {
+              if (intentDraft !== activeWakeIntent) {
+                onWakeIntentChange(intentDraft);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                e.currentTarget.blur();
+              }
+            }}
+            placeholder="optional · what should the agent watch for between sessions?"
+            rows={2}
+            style={{
+              width: '100%',
+              padding: '6px 8px',
+              border: '1px solid #e0dfd9',
+              borderRadius: 6,
+              background: '#fafaf7',
+              font: 'inherit',
+              fontSize: 12,
+              lineHeight: 1.4,
+              color: '#1a1a1a',
+              resize: 'vertical',
+              minHeight: 36,
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+            onFocus={(e) => {
+              e.currentTarget.style.background = '#fff';
+              e.currentTarget.style.borderColor = '#bdb9b0';
+            }}
+          />
         </div>
 
         {archive.length === 0 ? (

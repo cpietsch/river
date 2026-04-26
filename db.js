@@ -31,6 +31,7 @@ db.exec(`
     name TEXT NOT NULL DEFAULT 'untitled canvas',
     agent_id TEXT,
     session_id TEXT,
+    wake_intent TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -76,10 +77,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_proposals_project ON proposals(project_id);
 `);
 
+// Migration: add wake_intent column to existing databases that pre-date
+// the per-project keeper direction. SQLite doesn't support IF NOT EXISTS
+// on ALTER TABLE ADD COLUMN, so we probe pragma_table_info first.
+{
+  const cols = db
+    .prepare(`SELECT name FROM pragma_table_info('projects')`)
+    .all()
+    .map((r) => r.name);
+  if (!cols.includes('wake_intent')) {
+    db.exec(`ALTER TABLE projects ADD COLUMN wake_intent TEXT NOT NULL DEFAULT ''`);
+  }
+}
+
 // ── Project queries ──────────────────────────────────────────────────────
 
 const stmtListProjects = db.prepare(
   `SELECT id, name, agent_id AS agentId, session_id AS sessionId,
+          wake_intent AS wakeIntent,
           created_at AS createdAt, updated_at AS updatedAt
    FROM projects
    ORDER BY updated_at DESC`,
@@ -87,8 +102,13 @@ const stmtListProjects = db.prepare(
 
 const stmtGetProject = db.prepare(
   `SELECT id, name, agent_id AS agentId, session_id AS sessionId,
+          wake_intent AS wakeIntent,
           created_at AS createdAt, updated_at AS updatedAt
    FROM projects WHERE id = ?`,
+);
+
+const stmtSetProjectWakeIntent = db.prepare(
+  `UPDATE projects SET wake_intent = ?, updated_at = ? WHERE id = ?`,
 );
 
 const stmtInsertProject = db.prepare(
@@ -206,6 +226,10 @@ export function renameProject(id, name) {
 
 export function setProjectSession(id, sessionId) {
   stmtSetProjectSession.run(sessionId, Date.now(), id);
+}
+
+export function setProjectWakeIntent(id, wakeIntent) {
+  stmtSetProjectWakeIntent.run(wakeIntent ?? '', Date.now(), id);
 }
 
 export function touchProject(id) {

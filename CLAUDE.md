@@ -8,7 +8,7 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
 - `npm run typecheck` — `tsc --noEmit`. Run before committing.
 - `npm run build` — typecheck then production Vite build.
 - `npm run setup-agent` — provisions/updates the Managed Agent + environment + memory store. Re-run after editing `scripts/setup-agent.js` (system prompt, tool list); each run bumps the agent to a new version.
-- `.env` must have `ANTHROPIC_API_KEY`, `AGENT_ID`, `ENV_ID`, `MEMORY_STORE_ID` (the last three populated by `setup-agent`). Optional: `MAIN_MODEL` (default `claude-sonnet-4-6`), `MIST_MODEL` (default `claude-haiku-4-5-20251001`), `PORT` (default 4000).
+- `.env` must have `ANTHROPIC_API_KEY`, `AGENT_ID`, `ENV_ID`, `MEMORY_STORE_ID` (the last three populated by `setup-agent`). Optional: `MAIN_MODEL` (default `claude-opus-4-7` — the brain), `MIST_MODEL` (default `claude-haiku-4-5-20251001` — pill agents + labels), `PORT` (default 4000).
 
 ## Layout
 
@@ -43,7 +43,7 @@ Canvas-based chat prototype: a tldraw infinite canvas where each user/assistant 
   - `DELETE /api/session/:id` — best-effort cleanup of a Managed Agent session (called on archive ✕ and on ↻ reset session)
   - `POST /api/log` — client telemetry (events with `client.*` prefix only) → JSONL
   - `GET /api/health`
-- `scripts/setup-agent.js` — provisions/updates the Managed Agent + environment + memory store. System prompt + tool list live here. Custom tools registered: `get_graph_summary`, `get_card`, `create_branch`, `flag_card`, `create_card`. Re-runs are idempotent — existing IDs in `.env` get a new agent version (immutable; sessions reference latest by default).
+- `scripts/setup-agent.js` — provisions/updates the Managed Agent + environment + memory store. System prompt + tool list + model live here (default `claude-opus-4-7`). Custom tools registered: `get_graph_summary`, `get_card`, `create_branch`, `flag_card`, `create_card`. Re-runs are idempotent — existing IDs in `.env` get a new agent version (immutable; sessions reference latest by default). Override the model per-run with `MAIN_MODEL=… npm run setup-agent`.
 
 ## Concepts that are not obvious from the code
 

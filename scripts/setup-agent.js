@@ -14,7 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 const AGENT_NAME = 'river-2-brain';
 const ENV_NAME = 'river-2-env';
 const MEMORY_STORE_NAME = 'river-2-memory';
-const MODEL = process.env.MAIN_MODEL ?? 'claude-sonnet-4-6';
+const MODEL = process.env.MAIN_MODEL ?? 'claude-opus-4-7';
 
 // System prompt: the existing river-2 voice + tool-use guidance. Tools
 // (web_search, web_fetch, bash, read/write/edit/glob/grep) are available

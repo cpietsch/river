@@ -381,6 +381,104 @@ export function App() {
   //      only turns survive). This is how the user sees agent mutations
   //      that happened while they were closed (or in another tab once
   //      Phase 0d adds WebSocket broadcasts).
+  // Phase 0d: WebSocket subscription to the active project's channel. The
+  // server broadcasts every mutation it persists — agent-emitted (via
+  // /api/generate's tool resolvers) and user-emitted (via the per-mutation
+  // endpoints). Other tabs / devices / the future background worker push
+  // changes through this channel and the local store catches them up.
+  const activeProjectIdSel = useConversation((s) => s.activeProjectId);
+  useEffect(() => {
+    const projectId = activeProjectIdSel;
+    if (!projectId) return;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/projects/${encodeURIComponent(projectId)}`);
+    ws.onmessage = (e) => {
+      let msg: { type?: string } & Record<string, unknown>;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      const store = useConversation.getState();
+      switch (msg.type) {
+        case 'subscribed':
+          logEvent('client.ws_subscribed', { projectId });
+          return;
+        case 'turn_upsert': {
+          const t = (msg as { turn?: { id: string; role: 'user' | 'assistant'; content: string; parentId: string | null; emphasis: number; streaming: boolean; meta?: Record<string, unknown> } }).turn;
+          if (!t || !t.id) return;
+          store.upsertTurnFromRemote({
+            id: t.id as TurnId,
+            role: t.role,
+            content: t.content,
+            parentId: (t.parentId ?? null) as TurnId | null,
+            emphasis: t.emphasis,
+            streaming: t.streaming,
+            meta: (t.meta ?? {}) as import('./graph/types').TurnMeta,
+          });
+          return;
+        }
+        case 'subtree_deleted': {
+          const root = (msg as { rootId?: string }).rootId;
+          if (root) store.removeSubtree(root as TurnId);
+          return;
+        }
+        case 'link_added': {
+          const l = (msg as { link?: { id: string; fromId: string; toId: string; kind: string } }).link;
+          if (!l) return;
+          store.addLink({
+            id: l.id,
+            fromId: l.fromId as TurnId,
+            toId: l.toId as TurnId,
+            kind: l.kind,
+          });
+          return;
+        }
+        case 'link_deleted': {
+          const id = (msg as { linkId?: string }).linkId;
+          if (id) store.removeLink(id);
+          return;
+        }
+        case 'proposal_added': {
+          const p = (msg as { proposal?: { id: string; parentId: string; prompt: string; rationale?: string } }).proposal;
+          if (!p) return;
+          store.addProposal({
+            proposalId: p.id,
+            parentId: p.parentId,
+            prompt: p.prompt,
+            rationale: p.rationale ?? '',
+          });
+          return;
+        }
+        case 'proposal_removed': {
+          const id = (msg as { proposalId?: string }).proposalId;
+          if (id) store.removeProposal(id);
+          return;
+        }
+        case 'project_session_changed': {
+          const sid = (msg as { sessionId?: string | null }).sessionId ?? null;
+          store.setProjectSessionId(sid);
+          return;
+        }
+        // project_renamed / project_deleted matter for archived rows the
+        // user has cached locally; ignore for the active project (they
+        // can't be renamed/deleted while you're inside them).
+        default:
+          return;
+      }
+    };
+    ws.onerror = () => {
+      logEvent('client.ws_error', { projectId });
+    };
+    return () => {
+      try {
+        ws.close();
+      } catch (_) {
+        // ignore
+      }
+    };
+  }, [activeProjectIdSel]);
+
   const syncedRef = useRef(false);
   useEffect(() => {
     if (syncedRef.current) return;

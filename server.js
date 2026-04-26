@@ -3,6 +3,8 @@ import express from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import { WebSocketServer } from 'ws';
 import * as db from './db.js';
 
 // Structured JSONL logging — one file per UTC day under ./logs/. Used to
@@ -388,7 +390,7 @@ app.post('/api/generate', async (req, res) => {
       const userTurnId = ids[ids.length - 1];
       const userParentId = ids.length >= 2 ? ids[ids.length - 2] : null;
       if (userTurnId) {
-        db.upsertTurn({
+        const userTurn = {
           id: userTurnId,
           projectId,
           role: 'user',
@@ -397,10 +399,12 @@ app.post('/api/generate', async (req, res) => {
           emphasis: 1,
           streaming: false,
           meta: {},
-        });
+        };
+        db.upsertTurn(userTurn);
+        broadcast(projectId, { type: 'turn_upsert', turn: userTurn });
       }
       if (responseCardId) {
-        db.upsertTurn({
+        const respShell = {
           id: responseCardId,
           projectId,
           role: 'assistant',
@@ -409,7 +413,9 @@ app.post('/api/generate', async (req, res) => {
           emphasis: 1,
           streaming: true,
           meta: {},
-        });
+        };
+        db.upsertTurn(respShell);
+        broadcast(projectId, { type: 'turn_upsert', turn: respShell });
       }
     } catch (err) {
       logEvent('db.turn_seed_error', { projectId, message: err?.message });
@@ -660,6 +666,10 @@ app.post('/api/generate', async (req, res) => {
             if (projectId && db.getProject(projectId)) {
               try {
                 db.addLink({ id: linkId, projectId, fromId, toId, kind });
+                broadcast(projectId, {
+                  type: 'link_added',
+                  link: { id: linkId, projectId, fromId, toId, kind },
+                });
               } catch (err) {
                 logEvent('db.link_error', { projectId, message: err?.message });
               }
@@ -708,7 +718,7 @@ app.post('/api/generate', async (req, res) => {
               try {
                 // Edit propagates as an upsert with the existing role
                 // (assistant — we already validated). Meta is preserved.
-                db.upsertTurn({
+                const editedTurn = {
                   id: cardId,
                   projectId,
                   role: target.role,
@@ -717,6 +727,11 @@ app.post('/api/generate', async (req, res) => {
                   emphasis: target.emphasis ?? 1,
                   streaming: false,
                   meta: target.meta ?? {},
+                };
+                db.upsertTurn(editedTurn);
+                broadcast(projectId, {
+                  type: 'turn_upsert',
+                  turn: editedTurn,
                 });
               } catch (err) {
                 logEvent('db.edit_error', { projectId, message: err?.message });
@@ -806,7 +821,7 @@ app.post('/api/generate', async (req, res) => {
             }
             if (projectId && db.getProject(projectId)) {
               try {
-                db.upsertTurn({
+                const newTurn = {
                   id: newId,
                   projectId,
                   role,
@@ -815,7 +830,9 @@ app.post('/api/generate', async (req, res) => {
                   emphasis: 1,
                   streaming: false,
                   meta: {},
-                });
+                };
+                db.upsertTurn(newTurn);
+                broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
               } catch (err) {
                 logEvent('db.create_card_error', { projectId, message: err?.message });
               }
@@ -885,7 +902,7 @@ app.post('/api/generate', async (req, res) => {
               }
               if (projectId && db.getProject(projectId)) {
                 try {
-                  db.upsertTurn({
+                  const newTurn = {
                     id: newId,
                     projectId,
                     role,
@@ -894,7 +911,9 @@ app.post('/api/generate', async (req, res) => {
                     emphasis: 1,
                     streaming: false,
                     meta: {},
-                  });
+                  };
+                  db.upsertTurn(newTurn);
+                  broadcast(projectId, { type: 'turn_upsert', turn: newTurn });
                 } catch (err) {
                   logEvent('db.create_cards_error', { projectId, message: err?.message });
                 }
@@ -935,7 +954,7 @@ app.post('/api/generate', async (req, res) => {
             const target = (graph?.turns ?? {})[cardId];
             if (target && projectId && db.getProject(projectId)) {
               try {
-                db.upsertTurn({
+                const flaggedTurn = {
                   id: cardId,
                   projectId,
                   role: target.role,
@@ -944,7 +963,9 @@ app.post('/api/generate', async (req, res) => {
                   emphasis: 2,
                   streaming: false,
                   meta: { ...(target.meta ?? {}), agentFlagReason: reason.slice(0, 240) },
-                });
+                };
+                db.upsertTurn(flaggedTurn);
+                broadcast(projectId, { type: 'turn_upsert', turn: flaggedTurn });
               } catch (err) {
                 logEvent('db.flag_error', { projectId, message: err?.message });
               }
@@ -982,12 +1003,17 @@ app.post('/api/generate', async (req, res) => {
             );
             if (projectId && db.getProject(projectId)) {
               try {
-                db.addProposal({
+                const newProposal = {
                   id: event.id,
                   projectId,
                   parentId,
                   prompt: prompt.slice(0, 240),
                   rationale: rationale.slice(0, 240),
+                };
+                db.addProposal(newProposal);
+                broadcast(projectId, {
+                  type: 'proposal_added',
+                  proposal: newProposal,
                 });
               } catch (err) {
                 logEvent('db.proposal_error', { projectId, message: err?.message });
@@ -1045,7 +1071,7 @@ app.post('/api/generate', async (req, res) => {
     // completed response.
     if (projectId && responseCardId && db.getProject(projectId)) {
       try {
-        db.upsertTurn({
+        const finalTurn = {
           id: responseCardId,
           projectId,
           role: 'assistant',
@@ -1057,7 +1083,9 @@ app.post('/api/generate', async (req, res) => {
           emphasis: 1,
           streaming: false,
           meta: {},
-        });
+        };
+        db.upsertTurn(finalTurn);
+        broadcast(projectId, { type: 'turn_upsert', turn: finalTurn });
       } catch (err) {
         logEvent('db.assistant_finalize_error', {
           projectId,
@@ -1478,9 +1506,11 @@ app.patch('/api/projects/:id', (req, res) => {
   }
   if (typeof name === 'string' && name.trim()) {
     db.renameProject(req.params.id, name.trim());
+    broadcast(req.params.id, { type: 'project_renamed', name: name.trim() });
   }
   if (sessionId === null || typeof sessionId === 'string') {
     db.setProjectSession(req.params.id, sessionId);
+    broadcast(req.params.id, { type: 'project_session_changed', sessionId });
   }
   res.json({ project: db.getProject(req.params.id) });
 });
@@ -1492,6 +1522,7 @@ app.delete('/api/projects/:id', (req, res) => {
     return;
   }
   db.deleteProject(req.params.id);
+  broadcast(req.params.id, { type: 'project_deleted', projectId: req.params.id });
   res.json({ ok: true });
 });
 
@@ -1511,6 +1542,7 @@ app.post('/api/projects/:id/turns', (req, res) => {
     return;
   }
   db.upsertTurn({ ...turn, projectId });
+  broadcast(projectId, { type: 'turn_upsert', turn: { ...turn, projectId } });
   res.json({ ok: true });
 });
 
@@ -1521,6 +1553,11 @@ app.delete('/api/projects/:id/turns/:turnId', (req, res) => {
     return;
   }
   const removed = db.deleteSubtree(req.params.turnId, projectId);
+  broadcast(projectId, {
+    type: 'subtree_deleted',
+    rootId: req.params.turnId,
+    removed,
+  });
   res.json({ ok: true, removed });
 });
 
@@ -1536,11 +1573,13 @@ app.post('/api/projects/:id/links', (req, res) => {
     return;
   }
   db.addLink({ ...link, projectId });
+  broadcast(projectId, { type: 'link_added', link: { ...link, projectId } });
   res.json({ ok: true });
 });
 
 app.delete('/api/projects/:id/links/:linkId', (req, res) => {
   db.removeLink(req.params.linkId, req.params.id);
+  broadcast(req.params.id, { type: 'link_deleted', linkId: req.params.linkId });
   res.json({ ok: true });
 });
 
@@ -1556,11 +1595,19 @@ app.post('/api/projects/:id/proposals', (req, res) => {
     return;
   }
   db.addProposal({ ...proposal, projectId });
+  broadcast(projectId, {
+    type: 'proposal_added',
+    proposal: { ...proposal, projectId },
+  });
   res.json({ ok: true });
 });
 
 app.delete('/api/projects/:id/proposals/:proposalId', (req, res) => {
   db.removeProposal(req.params.proposalId, req.params.id);
+  broadcast(req.params.id, {
+    type: 'proposal_removed',
+    proposalId: req.params.proposalId,
+  });
   res.json({ ok: true });
 });
 
@@ -1625,7 +1672,77 @@ app.post('/api/migrate', (req, res) => {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, model: MAIN_MODEL }));
 
-app.listen(PORT, () => {
+// ───────────────────── WebSocket: per-project channels ────────────────
+//
+// Phase 0d. Each connected client subscribes to one project at a time
+// (the active canvas) and receives every mutation that lands on that
+// project — agent-emitted (via /api/generate's tool resolvers) and
+// user-emitted (via /api/projects/:id/* mutation endpoints). Multi-tab,
+// multi-device, and the future background worker (Phase 1) all share
+// this one fan-out point.
+//
+// We attach the WS to the same HTTP server so a single PORT serves both.
+
+const httpServer = http.createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+const wsSubscriptions = new Map(); // projectId → Set<WebSocket>
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const m = url.pathname.match(/^\/ws\/projects\/([^/]+)\/?$/);
+  if (!m) {
+    socket.destroy();
+    return;
+  }
+  const projectId = m[1];
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    let subs = wsSubscriptions.get(projectId);
+    if (!subs) {
+      subs = new Set();
+      wsSubscriptions.set(projectId, subs);
+    }
+    subs.add(ws);
+    logEvent('ws.connected', { projectId, subscribers: subs.size });
+    ws.on('close', () => {
+      subs.delete(ws);
+      if (subs.size === 0) wsSubscriptions.delete(projectId);
+      logEvent('ws.disconnected', { projectId, subscribers: subs.size });
+    });
+    // Send a hello so clients can confirm subscription.
+    try {
+      ws.send(JSON.stringify({ type: 'subscribed', projectId }));
+    } catch (_) {
+      // ignore
+    }
+  });
+});
+
+/**
+ * Fan out an event to every connected WS on a project's channel. Best-
+ * effort — no retry; clients reconnect and re-fetch state on disconnect.
+ */
+function broadcast(projectId, event) {
+  if (!projectId) return;
+  const subs = wsSubscriptions.get(projectId);
+  if (!subs || subs.size === 0) return;
+  let payload;
+  try {
+    payload = JSON.stringify(event);
+  } catch (_) {
+    return;
+  }
+  for (const ws of subs) {
+    if (ws.readyState === ws.OPEN) {
+      try {
+        ws.send(payload);
+      } catch (_) {
+        // ignore — closed sockets get cleaned in the close handler
+      }
+    }
+  }
+}
+
+httpServer.listen(PORT, () => {
   console.log(`river-2 api on :${PORT}  main=${MAIN_MODEL}  mist=${MIST_MODEL}`);
 });
  

@@ -60,6 +60,10 @@ interface ConversationStore {
   // Mutations — active canvas
   setProjectSessionId: (id: string | null) => void;
   setActivity: (entry: { turnId: TurnId; text: string } | null) => void;
+  // Replace a turn wholesale from a remote source (server-side push or
+  // initial fetch). Creates if absent, replaces all fields if present.
+  // Used by the WS sync hook so a single message applies fully.
+  upsertTurnFromRemote: (turn: Turn) => void;
   addProposal: (proposal: BranchProposal) => void;
   removeProposal: (proposalId: string) => void;
   clearProposals: () => void;
@@ -134,6 +138,11 @@ export const useConversation = create<ConversationStore>()(
 
   setProjectSessionId: (id) => set({ projectSessionId: id }),
   setActivity: (entry) => set({ activity: entry }),
+
+  upsertTurnFromRemote: (turn) =>
+    set((s) => ({
+      turns: { ...s.turns, [turn.id]: turn },
+    })),
 
   addProposal: (proposal) =>
     set((s) => {

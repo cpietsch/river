@@ -10,6 +10,13 @@ export default defineConfig({
         target: 'http://localhost:4000',
         changeOrigin: true,
       },
+      // Phase 0d: WebSocket per-project channel for live canvas updates.
+      // ws: true so Vite forwards the upgrade handshake to Express.
+      '/ws': {
+        target: 'http://localhost:4000',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

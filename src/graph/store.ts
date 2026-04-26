@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import { createShapeId } from 'tldraw';
 import type {
   AgentPrediction,
   BranchProposal,
@@ -8,6 +7,17 @@ import type {
   ServerProject,
 } from '../api';
 import type { Link, Turn, TurnId, TurnMeta, TurnRole } from './types';
+
+// Local id generator. Format mirrors the server (db.js's makeShapeId) so
+// client- and server-minted ids are interchangeable. tldraw's
+// `createShapeId` used to produce ids in the same shape; same convention
+// kept on purpose so persisted state from older builds still loads.
+function createShapeId(): TurnId {
+  const a = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  let body = '';
+  for (let i = 0; i < 21; i++) body += a[Math.floor(Math.random() * a.length)];
+  return `shape:${body}`;
+}
 
 interface NewTurnInit {
   id?: TurnId;

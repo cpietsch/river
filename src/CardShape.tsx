@@ -1,32 +1,36 @@
-import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
 import {
-  HTMLContainer,
-  Rectangle2d,
-  ShapeUtil,
-  type RecordProps,
-  T,
-  type TLBaseShape,
-} from 'tldraw';
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { useCardActions } from './CardActions';
 import type { ChipSpan } from './api';
 import { parseBlocks, stripMarkdown } from './graph/markdown';
 import { useConversation } from './graph/store';
+import type { Turn, TurnId } from './graph/types';
+import { CARD_WIDTH } from './graph/layout';
 
-// Mobile fix: tldraw's hand tool captures the pointer at touchstart and the
-// synthesized click on touchend often never fires on the button — so onClick
-// is unreliable for inline taps. We trigger actions on pointerdown directly
-// (instant feedback, no waiting for capture release) and stopPropagation so
-// tldraw never sees the gesture. For passive guards (textarea) where there
-// IS no action, just stopPropagation.
+// Re-export for App / layout consumers; kept here so the rendering layer
+// owns its own visual constants.
+export { CARD_WIDTH } from './graph/layout';
+export const CARD_HEIGHT_MIN = 120;
+
+/**
+ * Stop the pointerdown gesture from reaching React Flow (which would
+ * interpret it as a canvas pan or node selection). All inline interactive
+ * elements inside a card use this guard.
+ */
 function tapPointerDown(e: ReactPointerEvent<HTMLElement>): void {
   e.stopPropagation();
 }
 
 /**
  * Bind to onPointerDown to invoke `action` immediately on tap (mobile-safe)
- * while preventing tldraw from receiving the gesture. Skip the action when
- * `disabled` is true. This replaces the onClick + setPointerCapture pattern
- * which was racy under tldraw's hand-tool pointer capture.
+ * while preventing the canvas from receiving the gesture. Skip the action
+ * when `disabled` is true.
  */
 function tap(
   action: () => void,
@@ -40,9 +44,7 @@ function tap(
 }
 
 // Color palette per agent: pills are color-coded so the user can read which
-// perspective a prediction comes from without an extra label. `tint` is the
-// off-state background, `solid` is the on-state background, `border` and
-// `ink` keep enough contrast to read on cream/white card backgrounds.
+// perspective a prediction comes from without an extra label.
 const AGENT_PALETTE: Record<
   string,
   { tint: string; solid: string; border: string; ink: string }
@@ -67,165 +69,112 @@ const AGENT_PALETTE: Record<
   },
 };
 
-export type CardShape = TLBaseShape<
-  'card',
-  {
-    w: number;
-    h: number;
-    role: 'user' | 'assistant' | 'presumption';
-    layer: 'action' | 'reflection';
-    emphasis: number;
-    content: string;
-    streaming: boolean;
-  }
->;
-
-const cardShapeProps: RecordProps<CardShape> = {
-  w: T.number,
-  h: T.number,
-  role: T.literalEnum('user', 'assistant', 'presumption'),
-  layer: T.literalEnum('action', 'reflection'),
-  emphasis: T.number,
-  content: T.string,
-  streaming: T.boolean,
+/**
+ * React Flow custom node for a turn. Receives the turn id as `id`, reads
+ * the actual turn data from the conversation store reactively, and renders
+ * either the active input UI (when this card is the empty user-input
+ * leaf) or the standard card body.
+ */
+// Invisible source/target anchors so React Flow has somewhere to attach
+// parent → child edges. We don't surface drag-to-connect UX (cards aren't
+// connectable), but without a Handle the edge layer logs warnings about
+// missing source handles on every render tick.
+const HIDDEN_HANDLE_STYLE: CSSProperties = {
+  width: 1,
+  height: 1,
+  minWidth: 1,
+  minHeight: 1,
+  background: 'transparent',
+  border: 'none',
+  pointerEvents: 'none',
+  opacity: 0,
 };
 
-// Card width — responsive. On wide screens use the comfortable 540px reading
-// width; on phones cap to the viewport minus a small margin so cards don't
-// extend past the right edge. Computed once at module load (resize doesn't
-// refit; a full refresh will).
-export const CARD_WIDTH =
-  typeof window !== 'undefined'
-    ? Math.min(540, Math.max(280, window.innerWidth - 24))
-    : 540;
-export const CARD_HEIGHT_MIN = 120;
-
-export class CardShapeUtil extends ShapeUtil<CardShape> {
-  static override type = 'card' as const;
-  static override props = cardShapeProps;
-
-  override canEdit = () => false;
-  override canResize = () => false;
-  override canCull = () => false;
-  override hideResizeHandles = () => true;
-  override hideRotateHandle = () => true;
-  override isAspectRatioLocked = () => false;
-
-  getDefaultProps(): CardShape['props'] {
-    return {
-      w: CARD_WIDTH,
-      h: CARD_HEIGHT_MIN,
-      role: 'user',
-      layer: 'action',
-      emphasis: 1,
-      content: '',
-      streaming: false,
-    };
-  }
-
-  getGeometry(shape: CardShape) {
-    return new Rectangle2d({
-      width: shape.props.w,
-      height: shape.props.h,
-      isFilled: true,
-    });
-  }
-
-  component(shape: CardShape) {
-    return <CardBody shape={shape} />;
-  }
-
-  indicator(shape: CardShape) {
-    return <rect width={shape.props.w} height={shape.props.h} rx={10} ry={10} />;
-  }
+export function CardNode({ id }: NodeProps) {
+  const turn = useConversation((s) => s.turns[id as TurnId]);
+  if (!turn) return null;
+  // Wrapper div (rather than Fragment) so React Flow's node wrapper has a
+  // single rooted child; `nopan nodrag` here also short-circuits d3-zoom's
+  // pan filter at the node boundary so any inner pointer-down (chip taps,
+  // text selection drags) is never interpreted as a canvas pan.
+  return (
+    <div className="nopan nodrag" style={{ position: 'relative' }}>
+      <Handle type="target" position={Position.Top} style={HIDDEN_HANDLE_STYLE} isConnectable={false} />
+      <CardBody turn={turn} />
+      <Handle type="source" position={Position.Bottom} style={HIDDEN_HANDLE_STYLE} isConnectable={false} />
+    </div>
+  );
 }
 
-function CardBody({ shape }: { shape: CardShape }) {
-  const { role, content, streaming, w, h, emphasis } = shape.props;
+function CardBody({ turn }: { turn: Turn }) {
+  const { id, role, content, streaming, emphasis } = turn;
   const isUser = role === 'user';
   const actions = useCardActions();
-  const isActive = actions?.activeId === shape.id;
+  const isActive = actions?.activeId === id;
   const contentRef = useRef<HTMLDivElement | null>(null);
   const resizeCard = actions?.resizeCard;
   // Live read of the agent's current activity (e.g. "searching the web · …")
-  // when this card is the streaming target. Filters by turnId so other
+  // when this card is the streaming target. Filtered by turnId so other
   // cards don't re-render on every activity change.
   const activityText = useConversation((s) =>
-    s.activity && s.activity.turnId === shape.id ? s.activity.text : null,
+    s.activity && s.activity.turnId === id ? s.activity.text : null,
   );
 
-  // Measure the content block so the card's shape height matches exactly the
-  // rendered text — one source of truth, no character-count heuristic. Uses
-  // ResizeObserver so we re-measure on every reflow that matters: initial
-  // mount, content edits, viewport changes, AND late font loads (Source
-  // Serif 4 arrives async via Google Fonts; without this hook, the first
-  // measurement runs against the system-ui fallback and then never re-fires
-  // when the serif lands taller — cards render clipped mid-sentence on
-  // reload until the user edits something).
+  // Measure the content block so the node's reported height matches the
+  // rendered text — feeds the dagre layout via App's heights state. Uses
+  // ResizeObserver so we re-measure on every reflow (initial mount,
+  // content edits, late font loads, etc).
   useLayoutEffect(() => {
     if (isActive && isUser && !content) return; // active input card measures itself
     const el = contentRef.current;
     if (!el || !resizeCard) return;
-    // Initial sync read (matches the prior useLayoutEffect behavior so
-    // first-paint height is right when the system-ui fallback measurement
-    // happens to match the final font's measurement).
     const initial = el.scrollHeight;
-    if (initial > 0) resizeCard(shape.id, initial);
+    if (initial > 0) resizeCard(id, initial);
     const observer = new ResizeObserver(() => {
       const measured = el.scrollHeight;
-      // Skip 0 — the shape is culled/unmounted; clobbering height would
-      // turn the card into a one-pixel sliver.
-      if (measured > 0) resizeCard(shape.id, measured);
+      if (measured > 0) resizeCard(id, measured);
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, [content, streaming, w, isActive, isUser, resizeCard, shape.id]);
+  }, [content, streaming, isActive, isUser, resizeCard, id]);
 
-  // ACTIVE USER CARD = embedded chat input (only when content is still empty;
-  // once submitted the card immediately shows the committed text).
   if (isActive && isUser && !content) {
-    return <ActiveInputCard w={w} h={h} />;
+    return <ActiveInputCard />;
   }
 
   const bg = isUser ? '#fffef9' : '#f2f7ff';
   const borderColor = isUser ? '#d4d2c8' : '#a8c8ff';
-
-  // Emphasis pushes the border red and thicker — visual weight doubles as a
-  // prompt signal (see prompt-weighting pass in App.tsx).
   const emph = emphasis ?? 1;
   const isEmphasized = emph >= 2;
   const emphBorder = isEmphasized ? '#e24a4a' : borderColor;
   const emphWidth = isEmphasized ? 2 : 1;
 
+  const meta = turn.meta ?? {};
+  const chipSpans: ChipSpan[] = (meta.chipSpans ?? []) as ChipSpan[];
+  const chipsSelected = new Set<string>(meta.chipsSelected ?? []);
+  const flagReason = meta.agentFlagReason;
+  const options = meta.options ?? [];
+
   return (
-    <HTMLContainer
-      id={shape.id}
-      className="river-card"
+    <div
+      className="river-card nodrag nopan"
       style={{
-        width: w,
-        height: h,
+        width: CARD_WIDTH,
         position: 'relative',
         background: bg,
         border: `${emphWidth}px solid ${emphBorder}`,
         borderRadius: 10,
         color: '#1a1a1a',
-        // Body uses Source Serif 4 (loaded in index.html) for long-form
-        // reading rhythm; the surrounding UI chrome (toolbar, pills,
-        // input) keeps sans-serif.
         fontFamily:
           '"Source Serif 4", "Source Serif Pro", "Charter", "Iowan Old Style", "Georgia", "Times New Roman", serif',
         fontSize: 16,
         lineHeight: 1.65,
-        overflow: 'hidden',
-        pointerEvents: 'all',
         boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04)',
       }}
     >
       <div
         ref={contentRef}
         style={{
-          // Generous breathing room top + sides; bottom keeps space for the
-          // floating icon row.
           padding: '18px 22px 42px 22px',
           wordBreak: 'break-word',
           fontSize: 16,
@@ -238,13 +187,9 @@ function CardBody({ shape }: { shape: CardShape }) {
         {content
           ? renderContentBlocks(
               content,
-              (shape.meta as { chipSpans?: ChipSpan[] } | undefined)
-                ?.chipSpans ?? [],
-              new Set(
-                (shape.meta as { chipsSelected?: string[] } | undefined)
-                  ?.chipsSelected ?? [],
-              ),
-              (phrase) => actions?.toggleChipSelected(shape.id, phrase),
+              chipSpans,
+              chipsSelected,
+              (phrase) => actions?.toggleChipSelected(id, phrase),
               streaming,
             )
           : streaming && activityText
@@ -268,9 +213,7 @@ function CardBody({ shape }: { shape: CardShape }) {
               )
             : 'thinking…'}
         {!content && streaming && !activityText && <span className="river-cursor">▊</span>}
-        {/* Mid-stream tool indicator: when the agent has already streamed
-            some text and then kicks off another tool, surface the activity
-            inline below. Cleared by the next text delta. */}
+
         {content && streaming && activityText && (
           <div
             style={{
@@ -298,63 +241,49 @@ function CardBody({ shape }: { shape: CardShape }) {
           </div>
         )}
 
-        {/* Pick-from option pills the agent attached to this card via
-            present_options. Tap one to submit it as the next user turn —
-            the user doesn't have to retype the choice. Sits inside the
-            card body so it flows with content, above the action-icon row. */}
-        {(shape.meta as { options?: string[] } | undefined)?.options &&
-          (shape.meta as { options?: string[] }).options!.length > 0 && (
-            <div
-              style={{
-                marginTop: 12,
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: 6,
-              }}
-            >
-              {(shape.meta as { options?: string[] }).options!.map((opt, i) => (
-                <button
-                  key={`${i}-${opt}`}
-                  type="button"
-                  onPointerDown={tap(() => actions?.pickOption(shape.id, opt))}
-                  style={{
-                    display: 'inline-block',
-                    padding: '6px 12px',
-                    background: '#fff',
-                    color: '#2e6ecf',
-                    border: '1px solid #2e6ecf',
-                    borderRadius: 999,
-                    font: 'inherit',
-                    fontSize: 13,
-                    fontFamily: 'system-ui, -apple-system, sans-serif',
-                    cursor: 'pointer',
-                    WebkitTapHighlightColor: 'transparent',
-                    lineHeight: 1.3,
-                    textAlign: 'left',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = '#2e6ecf';
-                    e.currentTarget.style.color = '#fff';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = '#fff';
-                    e.currentTarget.style.color = '#2e6ecf';
-                  }}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          )}
+        {options.length > 0 && (
+          <div
+            style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 6 }}
+          >
+            {options.map((opt, i) => (
+              <button
+                key={`${i}-${opt}`}
+                type="button"
+                onPointerDown={tap(() => actions?.pickOption(id, opt))}
+                style={{
+                  display: 'inline-block',
+                  padding: '6px 12px',
+                  background: '#fff',
+                  color: '#2e6ecf',
+                  border: '1px solid #2e6ecf',
+                  borderRadius: 999,
+                  font: 'inherit',
+                  fontSize: 13,
+                  fontFamily: 'system-ui, -apple-system, sans-serif',
+                  cursor: 'pointer',
+                  WebkitTapHighlightColor: 'transparent',
+                  lineHeight: 1.3,
+                  textAlign: 'left',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#2e6ecf';
+                  e.currentTarget.style.color = '#fff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = '#fff';
+                  e.currentTarget.style.color = '#2e6ecf';
+                }}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Agent flag indicator — appears top-right when the brain has
-          marked this card as a turning point via flag_card. The reason
-          shows on hover via the title attribute. */}
-      {(shape.meta as { agentFlagReason?: string } | undefined)
-        ?.agentFlagReason && (
+      {flagReason && (
         <div
-          title={`agent: ${(shape.meta as { agentFlagReason?: string }).agentFlagReason}`}
+          title={`agent: ${flagReason}`}
           aria-label="Flagged by the agent"
           style={{
             position: 'absolute',
@@ -390,8 +319,6 @@ function CardBody({ shape }: { shape: CardShape }) {
         </div>
       )}
 
-      {/* Action icons: same two on every card (branch + like), bottom-right so
-          they never overlap text. Faded when idle, prominent on hover. */}
       <div
         className="river-card-actions"
         style={{
@@ -404,10 +331,7 @@ function CardBody({ shape }: { shape: CardShape }) {
           transition: 'opacity 120ms',
         }}
       >
-        <IconButton
-          label="branch"
-          onClick={() => actions?.branchFrom(shape.id)}
-        >
+        <IconButton label="branch" onClick={() => actions?.branchFrom(id)}>
           <path
             d="M7 5v9a4 4 0 0 0 4 4h7M15 14l3 3-3 3"
             stroke="currentColor"
@@ -418,7 +342,7 @@ function CardBody({ shape }: { shape: CardShape }) {
         </IconButton>
         <IconButton
           label={isEmphasized ? 'unlike' : 'like (priority)'}
-          onClick={() => actions?.toggleEmphasis(shape.id)}
+          onClick={() => actions?.toggleEmphasis(id)}
         >
           <path
             d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
@@ -430,7 +354,7 @@ function CardBody({ shape }: { shape: CardShape }) {
           />
         </IconButton>
       </div>
-    </HTMLContainer>
+    </div>
   );
 }
 
@@ -470,7 +394,7 @@ function IconButton({
   );
 }
 
-function ActiveInputCard({ w, h }: { w: number; h: number }) {
+function ActiveInputCard() {
   const actions = useCardActions();
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -485,10 +409,6 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
   const reflections = actions?.activePredictions ?? [];
   const chipCount = actions?.chipSelectionCount ?? 0;
 
-  // Measure the actual content height so the growing textarea feeds a correct
-  // card height — no scrollbar, no wasted space. Re-runs when reflection
-  // pills land/change OR when the in-text selection counter pill appears,
-  // so the card always grows to fit its content.
   useLayoutEffect(() => {
     const ta = taRef.current;
     const root = rootRef.current;
@@ -496,7 +416,7 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     ta.style.height = 'auto';
     ta.style.height = ta.scrollHeight + 'px';
     const measured = root.scrollHeight;
-    if (measured <= 0) return; // culled/unmounted — leave stored height alone
+    if (measured <= 0) return;
     resizeActive(measured);
   }, [input, resizeActive, reflections, chipCount]);
 
@@ -511,9 +431,6 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
     chipSelectionCount,
     clearAllChipSelections,
   } = actions;
-  // Send is enabled when there's typed input OR at least one selection
-  // (toggled agent pill or selected inline chip on any ancestor) — any of
-  // those count as input on their own.
   const canSend =
     !busy &&
     (input.trim().length > 0 ||
@@ -521,10 +438,10 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
       (actions.hasChipSelections ?? false));
 
   return (
-    <HTMLContainer
+    <div
+      className="nodrag nopan"
       style={{
-        width: w,
-        height: h,
+        width: CARD_WIDTH,
         background: '#ffffff',
         border: '2px solid #111',
         borderRadius: 12,
@@ -532,203 +449,185 @@ function ActiveInputCard({ w, h }: { w: number; h: number }) {
         fontFamily: 'system-ui, -apple-system, sans-serif',
         fontSize: 14,
         lineHeight: 1.5,
-        overflow: 'hidden',
-        pointerEvents: 'all',
         boxShadow: '0 4px 14px rgba(0,0,0,0.16), 0 10px 32px rgba(0,0,0,0.08)',
       }}
     >
-    <div
-      ref={rootRef}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        padding: '8px 10px 10px',
-        gap: 6,
-      }}
-    >
-      {/* Pill row — agent predictions (lavender / amber / teal) plus a
-          counter pill summarizing how many in-text chip selections are
-          active across the active chain. The counter pill is tappable;
-          tapping clears all in-text selections in one action. */}
-      {(activePredictions.length > 0 || chipSelectionCount > 0) && (
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 4,
-          }}
-        >
-          {activePredictions.map((p, i) => {
-            const on = activeToggled.has(p.label.trim());
-            const palette = AGENT_PALETTE[p.agent] ?? AGENT_PALETTE.assumption;
-            return (
+      <div
+        ref={rootRef}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          padding: '8px 10px 10px',
+          gap: 6,
+        }}
+      >
+        {(activePredictions.length > 0 || chipSelectionCount > 0) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {activePredictions.map((p, i) => {
+              const on = activeToggled.has(p.label.trim());
+              const palette = AGENT_PALETTE[p.agent] ?? AGENT_PALETTE.assumption;
+              return (
+                <button
+                  key={`pred-${i}`}
+                  type="button"
+                  title={`${p.agent}: ${p.full}`}
+                  aria-pressed={on}
+                  onPointerDown={tap(() => togglePrediction(p))}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '4px 10px',
+                    background: on ? palette.solid : palette.tint,
+                    border: `1px solid ${on ? palette.solid : palette.border}`,
+                    color: on ? '#fff' : palette.ink,
+                    borderRadius: 999,
+                    font: 'inherit',
+                    fontSize: 12,
+                    fontWeight: on ? 600 : 500,
+                    cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                    lineHeight: 1.4,
+                    whiteSpace: 'nowrap',
+                    maxWidth: '100%',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    transition: 'background 120ms, color 120ms',
+                  }}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+            {chipSelectionCount > 0 && (
               <button
-                key={`pred-${i}`}
+                key="chip-count"
                 type="button"
-                title={`${p.agent}: ${p.full}`}
-                aria-pressed={on}
-                onPointerDown={tap(() => togglePrediction(p))}
+                title={`${chipSelectionCount} in-text selection${chipSelectionCount === 1 ? '' : 's'} — tap to clear`}
+                aria-label="Clear text selections"
+                onPointerDown={tap(() => clearAllChipSelections())}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
+                  gap: 4,
                   padding: '4px 10px',
-                  background: on ? palette.solid : palette.tint,
-                  border: `1px solid ${on ? palette.solid : palette.border}`,
-                  color: on ? '#fff' : palette.ink,
+                  background: '#2e6ecf',
+                  border: '1px solid #2e6ecf',
+                  color: '#fff',
                   borderRadius: 999,
                   font: 'inherit',
                   fontSize: 12,
-                  fontWeight: on ? 600 : 500,
+                  fontWeight: 600,
                   cursor: 'pointer',
                   WebkitTapHighlightColor: 'transparent',
                   lineHeight: 1.4,
                   whiteSpace: 'nowrap',
-                  maxWidth: '100%',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  transition: 'background 120ms, color 120ms',
+                  transition: 'background 120ms',
                 }}
               >
-                {p.label}
+                {chipSelectionCount} selected
+                <span
+                  aria-hidden
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 14,
+                    height: 14,
+                    borderRadius: 999,
+                    background: 'rgba(255,255,255,0.2)',
+                    fontSize: 11,
+                    lineHeight: 1,
+                  }}
+                >
+                  ✕
+                </span>
               </button>
-            );
-          })}
-          {chipSelectionCount > 0 && (
-            <button
-              key="chip-count"
-              type="button"
-              title={`${chipSelectionCount} in-text selection${chipSelectionCount === 1 ? '' : 's'} — tap to clear`}
-              aria-label="Clear text selections"
-              onPointerDown={tap(() => clearAllChipSelections())}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                padding: '4px 10px',
-                background: '#2e6ecf',
-                border: '1px solid #2e6ecf',
-                color: '#fff',
-                borderRadius: 999,
-                font: 'inherit',
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: 'pointer',
-                WebkitTapHighlightColor: 'transparent',
-                lineHeight: 1.4,
-                whiteSpace: 'nowrap',
-                transition: 'background 120ms',
-              }}
-            >
-              {chipSelectionCount} selected
-              <span
-                aria-hidden
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 14,
-                  height: 14,
-                  borderRadius: 999,
-                  background: 'rgba(255,255,255,0.2)',
-                  fontSize: 11,
-                  lineHeight: 1,
-                }}
-              >
-                ✕
-              </span>
-            </button>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
 
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          background: '#f7f6f2',
-          border: '1px solid #e0dfd9',
-          borderRadius: 10,
-          padding: '4px 6px 4px 12px',
-        }}
-      >
-        <textarea
-          ref={taRef}
-          data-testid="river-input"
-          value={input}
-          disabled={busy}
-          placeholder={busy ? 'thinking…' : 'ask the river…'}
-          onChange={(e) => onInputChange(e.currentTarget.value)}
-          onPointerDown={tapPointerDown}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          rows={1}
-          autoCorrect="on"
-          autoCapitalize="sentences"
+        <div
           style={{
-            flex: 1,
-            padding: '6px 0',
-            background: 'transparent',
-            border: 'none',
-            color: '#111',
-            fontFamily: 'inherit',
-            fontSize: 14,
-            lineHeight: 1.4,
-            resize: 'none',
-            outline: 'none',
-            minHeight: 28,
-            overflow: 'hidden',
-          }}
-        />
-        <button
-          type="button"
-          onPointerDown={tap(() => submit(), !canSend)}
-          disabled={!canSend}
-          aria-label="Send"
-          data-testid="send"
-          style={{
-            display: 'inline-flex',
+            display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            width: 32,
-            height: 32,
-            flexShrink: 0,
-            background: canSend ? '#111' : 'transparent',
-            color: canSend ? '#fff' : '#bbb',
-            border: 'none',
-            borderRadius: 8,
-            cursor: canSend ? 'pointer' : 'default',
-            WebkitTapHighlightColor: 'transparent',
+            gap: 6,
+            background: '#f7f6f2',
+            border: '1px solid #e0dfd9',
+            borderRadius: 10,
+            padding: '4px 6px 4px 12px',
           }}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path
-              d="M5 12h14M13 6l6 6-6 6"
-              stroke="currentColor"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </button>
+          <textarea
+            ref={taRef}
+            data-testid="river-input"
+            className="nodrag nopan nowheel"
+            value={input}
+            disabled={busy}
+            placeholder={busy ? 'thinking…' : 'ask the river…'}
+            onChange={(e) => onInputChange(e.currentTarget.value)}
+            onPointerDown={tapPointerDown}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            rows={1}
+            autoCorrect="on"
+            autoCapitalize="sentences"
+            style={{
+              flex: 1,
+              padding: '6px 0',
+              background: 'transparent',
+              border: 'none',
+              color: '#111',
+              fontFamily: 'inherit',
+              fontSize: 14,
+              lineHeight: 1.4,
+              resize: 'none',
+              outline: 'none',
+              minHeight: 28,
+              overflow: 'hidden',
+            }}
+          />
+          <button
+            type="button"
+            onPointerDown={tap(() => submit(), !canSend)}
+            disabled={!canSend}
+            aria-label="Send"
+            data-testid="send"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 32,
+              height: 32,
+              flexShrink: 0,
+              background: canSend ? '#111' : 'transparent',
+              color: canSend ? '#fff' : '#bbb',
+              border: 'none',
+              borderRadius: 8,
+              cursor: canSend ? 'pointer' : 'default',
+              WebkitTapHighlightColor: 'transparent',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path
+                d="M5 12h14M13 6l6 6-6 6"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
-    </HTMLContainer>
   );
 }
 
-/**
- * Top-level renderer: parses the raw assistant text into block-level
- * elements (paragraphs and tables) and renders each with appropriate
- * spacing. Chips and emphasis are applied inside paragraph blocks via
- * renderWithChipSpans; tables render as plain styled rows. The streaming
- * cursor lands at the end of the last paragraph if streaming.
- */
 function renderContentBlocks(
   raw: string,
   spans: ChipSpan[],
@@ -755,7 +654,6 @@ function renderContentBlocks(
         </p>
       );
     }
-    // Table block.
     return (
       <table
         key={`t-${idx}`}
@@ -807,20 +705,6 @@ function renderContentBlocks(
   });
 }
 
-/**
- * Render prose with markdown emphasis and chip spans interleaved. The text
- * passed in is the raw assistant output (may include `**bold**` / `*italic*`
- * markers). chipSpans were extracted from the marker-stripped plain text.
- *
- * Algorithm:
- *  1. Strip markdown markers, recording bold/italic ranges in plain coords.
- *  2. Find first non-overlapping occurrence of each chip span in the plain
- *     text (longest first so "MacBook Pro M-series" claims its range
- *     before "Pro" or "MacBook" can).
- *  3. Walk plain-text positions, splitting at every range boundary, and
- *     emit React nodes wrapping with <strong>/<em>/<BranchChip> as needed.
- *     Chips and emphasis can nest in either direction.
- */
 function renderWithChipSpans(
   raw: string,
   spans: ChipSpan[],
@@ -851,9 +735,6 @@ function renderWithChipSpans(
     }
   }
 
-  // Build a sorted set of "split points" at every range start/end so we
-  // can walk plain text in segments and ask, for each segment, whether
-  // it's bold, italic, and/or a chip.
   const points = new Set<number>([0, plain.length]);
   for (const r of [...matches, ...bold, ...italic]) {
     points.add(r.start);
@@ -914,11 +795,6 @@ function BranchChip({
   on: boolean;
   onClick: () => void;
 }) {
-  // Unselected chips are INVISIBLE — they take the same space as the
-  // underlying text, no padding, no margin, no font-weight change — so
-  // line wrapping behaves exactly as the prose flowed without chips.
-  // Selected chips paint a colored background behind the same characters
-  // (still no padding shift) so they don't reflow the page.
   return (
     <button
       type="button"
@@ -941,8 +817,6 @@ function BranchChip({
         WebkitTapHighlightColor: 'transparent',
         lineHeight: 'inherit',
         transition: 'background 120ms, color 120ms',
-        // Box-shadow rather than padding to give the colored span a tiny
-        // bit of visual breathing room without adding layout width.
         boxShadow: on ? '0 0 0 2px #2e6ecf' : 'none',
       }}
     >
@@ -950,4 +824,3 @@ function BranchChip({
     </button>
   );
 }
-

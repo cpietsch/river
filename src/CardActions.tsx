@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
-import type { TLShapeId } from 'tldraw';
 import type { AgentPrediction } from './api';
+import type { TurnId } from './graph/types';
 
 export interface CardActions {
-  activeId: TLShapeId | null;
+  activeId: TurnId | null;
   // Predictions from all agents (assumption / skeptic / expander / …) for the
   // active input card's parent assistant — rendered as inline pills above the
   // textarea, color-coded by agent. Empty until the parent's predictions
@@ -23,19 +23,19 @@ export interface CardActions {
   chipSelectionCount: number;
   // Clear every selected chip across the active chain's ancestors.
   clearAllChipSelections: () => void;
-  branchFrom: (turnId: TLShapeId) => void;
+  branchFrom: (turnId: TurnId) => void;
   // Submit an option pill verbatim as the next user turn. Bypasses the
   // input field — the user already chose by tapping. Clears the options
   // on the source card so the canvas reads cleanly when scrolled back to
   // (the chosen text shows up as the next user turn anyway).
-  pickOption: (cardId: TLShapeId, text: string) => void;
+  pickOption: (cardId: TurnId, text: string) => void;
   // Toggle an inline [[term]] chip's selected state in-place on its card.
   // On submit, every selected chip across the active chain's ancestors
   // rides forward as userContext.
-  toggleChipSelected: (cardId: TLShapeId, term: string) => void;
+  toggleChipSelected: (cardId: TurnId, term: string) => void;
   togglePrediction: (prediction: AgentPrediction) => void;
-  toggleEmphasis: (turnId: TLShapeId) => void;
-  deleteCard: (turnId: TLShapeId) => void;
+  toggleEmphasis: (turnId: TurnId) => void;
+  deleteCard: (turnId: TurnId) => void;
 
   // Input state for the active (empty-user) card — its content IS the chat input.
   input: string;
@@ -43,7 +43,7 @@ export interface CardActions {
   onInputChange: (text: string) => void;
   submit: (overrideText?: string) => void;
   resizeActive: (h: number) => void;
-  resizeCard: (id: TLShapeId, h: number) => void;
+  resizeCard: (id: TurnId, h: number) => void;
   busy: boolean;
 }
 

@@ -1,9 +1,9 @@
-import type { TLShapeId } from 'tldraw';
 import type { AgentPrediction, ChipSpan } from '../api';
 
-// Turn IDs reuse tldraw's TLShapeId so the graph store and the canvas share
-// a single id space — a turn and its rendered card shape are the same id.
-export type TurnId = TLShapeId;
+// Turn IDs are opaque strings (format "shape:abc123" — same convention the
+// server-side makeShapeId uses, so client + server agree). Shared with the
+// canvas renderer's node ids since each turn renders 1:1 as a node.
+export type TurnId = string;
 
 export type TurnRole = 'user' | 'assistant';
 

@@ -49,6 +49,24 @@
     .tl-container, .tl-background { background: #f7f6f2 !important; }
     /* Hide tldraw watermark in the prototype — this is a dev-only prototype, not a production deploy. */
     .tl-watermark_SEE-LICENSE { display: none !important; }
+    /* React Flow defaults `.react-flow__node` to `user-select: none` and
+       `touch-action: none` (the latter inherited from the body rule
+       above). Cards need text selection + native browser gestures inside
+       them, so we override on the node wrapper and the inner card
+       surfaces. d3-zoom still doesn't pan when a pointer goes down inside
+       a card because every card uses `.nopan` on its outer wrapper. */
+    .react-flow__node {
+      user-select: text;
+      -webkit-user-select: text;
+      -moz-user-select: text;
+      touch-action: auto;
+      cursor: default;
+    }
+    .react-flow__node .river-card,
+    .react-flow__node .river-card * {
+      user-select: text;
+      -webkit-user-select: text;
+    }
   </style>
 </head>
 <body>

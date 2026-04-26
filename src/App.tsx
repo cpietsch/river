@@ -1,18 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Tldraw,
-  toRichText,
-  EASINGS,
-  type Editor,
-  type TLShapeId,
-  type TLComponents,
-} from 'tldraw';
-import {
-  CardShapeUtil,
-  CARD_WIDTH,
-  CARD_HEIGHT_MIN,
-  type CardShape,
-} from './CardShape';
+  ReactFlow,
+  ReactFlowProvider,
+  Background,
+  SmoothStepEdge,
+  BezierEdge,
+  type Edge,
+  type Node,
+  type ReactFlowInstance,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { CardNode } from './CardShape';
 import { CardActionsContext } from './CardActions';
 import {
   deleteProjectRemote,
@@ -37,36 +35,44 @@ import {
   type GraphSnapshot,
 } from './api';
 import { useConversation, deriveProjectName } from './graph/store';
-import { useTldrawSync } from './graph/useTldrawSync';
-import { syncStoreToTldraw } from './graph/sync';
 import { extractSpans } from './graph/extractSpans';
 import { stripMarkdown } from './graph/markdown';
+import { buildFlow, CARD_WIDTH, CARD_HEIGHT_HINT } from './graph/layout';
 import type { TurnId } from './graph/types';
 
-const shapeUtils = [CardShapeUtil];
+// Card-shaped React Flow node registry. Defined module-scope to keep
+// ReactFlow from re-mounting nodes on every render.
+const nodeTypes = { card: CardNode };
 
+// Edge type registry. `parent` is the standard tree edge produced by
+// `buildFlow` for parent → child relations; `link` is reserved for
+// cross-tree references (currently unused). Module-scope for the same
+// re-mount avoidance reason as nodeTypes.
+const edgeTypes = { parent: SmoothStepEdge, link: BezierEdge };
 
-const SMOOTH_CAMERA = {
-  animation: { duration: 500, easing: EASINGS.easeOutCubic },
-} as const;
+const SMOOTH_CAMERA = { duration: 500 } as const;
 
 const START_SEED = 'LUCKFOX PicoKVM Base vs NanoKVM';
-
-const components: TLComponents = {
-  ContextMenu: null,
-};
 
 interface CtxMenu {
   x: number;
   y: number;
-  shape: CardShape | null;
+  turnId: TurnId | null;
 }
 
 const EMPTY_PREDICTIONS: AgentPrediction[] = [];
 const EMPTY_TOGGLED_LABELS: string[] = [];
 
 export function App() {
-  const editorRef = useRef<Editor | null>(null);
+  return (
+    <ReactFlowProvider>
+      <AppInner />
+    </ReactFlowProvider>
+  );
+}
+
+function AppInner() {
+  const flowRef = useRef<ReactFlowInstance | null>(null);
   const [activeId, setActiveId] = useState<TurnId | null>(null);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -82,6 +88,11 @@ export function App() {
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const labelInFlightRef = useRef(false);
+  // Per-card measured heights, fed back into dagre so the layout reflects
+  // real content rather than the placeholder hint. Updated by CardNode's
+  // ResizeObserver via resizeCard.
+  const [heights, setHeights] = useState<Record<TurnId, number>>({});
+  const heightsRef = useRef<Record<TurnId, number>>({});
 
   // Fetch agent + env identifiers once on mount; surfaced in the projects
   // menu footer (version, model, session id). Refreshed on demand if the
@@ -110,82 +121,51 @@ export function App() {
   );
   const activeSessionId = useConversation((s) => s.projectSessionId);
 
-  // Bridge the store onto tldraw. Whenever the conversation graph changes,
-  // syncer reflects it onto the canvas. Structural changes (turn created /
-  // removed) trigger relayoutAll so the tidy-tree re-flows.
-  const onStructuralChange = useCallback(() => {
-    const editor = editorRef.current;
-    if (editor) relayoutAll(editor);
-  }, []);
-  useTldrawSync(editorRef, onStructuralChange);
+  // Derive React Flow nodes + edges from the store + measured heights.
+  // useMemo on the inputs so structural changes flow through and dagre
+  // recomputes positions; identity-stable node/edge arrays prevent
+  // ReactFlow from re-mounting nodes unnecessarily.
+  const linksSel = useConversation((s) => s.links);
+  const flow = useMemo(
+    () => buildFlow(turnsSel, linksSel, heights),
+    [turnsSel, linksSel, heights],
+  );
+  const nodes: Node[] = flow.nodes;
+  const edges: Edge[] = flow.edges;
 
-  const handleMount = useCallback((editor: Editor) => {
-    editorRef.current = editor;
+  const onFlowInit = useCallback((instance: ReactFlowInstance) => {
+    flowRef.current = instance;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__editor__ = editor;
-    editor.user.updateUserPreferences({ animationSpeed: 1 });
-    editor.setCurrentTool('hand');
-    editor.store.listen(
-      () => {
-        if (editor.getCurrentToolId() !== 'hand') {
-          editor.setCurrentTool('hand');
-        }
-      },
-      { source: 'user', scope: 'session' },
-    );
-
-    // The graph store is canonical. tldraw shapes that belong to a previous
-    // schema (or that orphaned mid-stream) get wiped — the syncer will
-    // recreate exactly the shapes the store needs.
-    {
-      const ids = editor.getCurrentPageShapes().map((s) => s.id);
-      if (ids.length > 0) editor.deleteShapes(ids);
-    }
-
-    const { turns, createTurn, getTurn } = useConversation.getState();
-    const turnList = Object.values(turns);
-    // Initial sync: when the store loads with persisted turns (zustand
-    // persist hydrates synchronously before this point), the syncer's
-    // subscribe-only model never fires — nothing has changed. Without
-    // this manual flush, persisted turns sit in the store with no
-    // matching tldraw shapes, and the canvas reads as empty.
-    if (turnList.length > 0) {
-      syncStoreToTldraw(editor);
-      relayoutAll(editor);
-    }
-    if (turnList.length === 0) {
-      const id = createTurn({ role: 'user', parentId: null });
-      setActiveId(id);
-      setInput(START_SEED);
-      // Center horizontally on the seed card, leaving room above for tools.
-      editor.setCamera(
-        { x: CARD_WIDTH / 2, y: 180 + CARD_HEIGHT_MIN / 2, z: 1 },
-        { animation: { duration: 0 } },
-      );
-    } else {
-      // Resume on the most recently empty user turn (the active input). If
-      // none, fall back to whatever turn comes last.
-      const lastEmptyUser = [...turnList]
-        .reverse()
-        .find((t) => t.role === 'user' && t.content.trim() === '');
-      const fallback = turnList[turnList.length - 1];
-      const targetId = lastEmptyUser?.id ?? fallback?.id ?? null;
-      setActiveId(targetId);
-      // Camera to wherever the resume target sits on the canvas.
-      if (targetId) {
-        const t = getTurn(targetId);
-        if (t) {
-          const shape = editor.getShape(targetId) as unknown as CardShape | undefined;
-          if (shape) {
-            editor.centerOnPoint(
-              { x: shape.x + CARD_WIDTH / 2, y: shape.y + CARD_HEIGHT_MIN / 2 },
-              { animation: { duration: 0 } },
-            );
-          }
-        }
-      }
-    }
+    (window as any).__flow__ = instance;
+    // Initial fit so the user lands on the canvas zoomed sensibly.
+    requestAnimationFrame(() => {
+      instance.fitView({ duration: 0, padding: 0.2 });
+    });
   }, []);
+
+  // Pan + zoom to focus a specific card. Used by branch / accept-proposal /
+  // resume-project flows. Defers one frame so the new card has settled
+  // into the layout before we try to focus it.
+  const focusCard = useCallback(
+    (id: TurnId, opts: { duration?: number } = {}) => {
+      const flowInstance = flowRef.current;
+      if (!flowInstance) return;
+      const run = () => {
+        flowInstance.fitView({
+          nodes: [{ id }],
+          duration: opts.duration ?? SMOOTH_CAMERA.duration,
+          padding: 0.3,
+          maxZoom: 1,
+        });
+      };
+      if (typeof requestAnimationFrame !== 'undefined') {
+        requestAnimationFrame(() => requestAnimationFrame(run));
+      } else {
+        run();
+      }
+    },
+    [],
+  );
 
   // ── store-backed read selectors (imperative, called inside callbacks) ──
 
@@ -468,9 +448,8 @@ export function App() {
       text: string,
       opts: { skipUserContext?: boolean; activate?: boolean } = {},
     ) => {
-      const editor = editorRef.current;
       const store = useConversation.getState();
-      if (!editor || busy) return;
+      if (busy) return;
       // `activate` is the explicit override: callers like acceptProposal
       // want full active-leaf treatment (follow-up input card, camera pan)
       // even though the user's activeId is still pointing somewhere else
@@ -487,8 +466,8 @@ export function App() {
         if (activeId !== userTurnId) setActiveId(userTurnId);
       }
 
-      // Commit user text + create assistant child via the store. The syncer
-      // will materialize them as tldraw shapes; relayoutAll positions them.
+      // Commit user text + create assistant child via the store. React
+      // Flow renders directly from the dagre-laid-out node array.
       store.setContent(userTurnId, text, { streaming: false });
       const assistantId = store.createTurn({
         role: 'assistant',
@@ -692,29 +671,8 @@ export function App() {
             meta: {},
           });
 
-          // Camera follows the just-finished assistant + the new empty input.
-          // Read positions from the (now-synced) tldraw shapes.
-          const assistantShape = editor.getShape(assistantId) as unknown as
-            | CardShape
-            | undefined;
-          const nextShape = editor.getShape(nextId) as unknown as
-            | CardShape
-            | undefined;
-          if (assistantShape && nextShape) {
-            const inputH = inputWrapRef.current?.offsetHeight ?? 140;
-            const viewportH =
-              window.visualViewport?.height ?? window.innerHeight ?? 800;
-            const zoom = editor.getCamera().z || 1;
-            const desiredScreenY = Math.max(140, viewportH - inputH - 120);
-            const shift = (viewportH / 2 - desiredScreenY) / zoom;
-            editor.centerOnPoint(
-              {
-                x: assistantShape.x + CARD_WIDTH / 2,
-                y: nextShape.y + CARD_HEIGHT_MIN / 2 + shift,
-              },
-              SMOOTH_CAMERA,
-            );
-          }
+          // Camera follows the just-spawned next-empty-input card.
+          focusCard(nextId);
         }
 
         // Chip spans (local): compromise NLP + regex backstops identify
@@ -842,19 +800,11 @@ export function App() {
       streaming: false,
       meta: {},
     });
-    // Camera follows after layout settles (sync happens synchronously).
-    const editor = editorRef.current;
-    if (editor) {
-      const shape = editor.getShape(newId) as unknown as CardShape | undefined;
-      if (shape) {
-        editor.centerOnPoint(
-          { x: shape.x + CARD_WIDTH / 2, y: shape.y + CARD_HEIGHT_MIN / 2 },
-          SMOOTH_CAMERA,
-        );
-      }
-    }
+    // Camera follows after layout settles. focusCard defers to the next
+    // animation frame so dagre can position the new node first.
+    focusCard(newId);
     return newId;
-  }, []);
+  }, [focusCard]);
 
   const branchFrom = useCallback(
     (turnId: TurnId) => {
@@ -975,16 +925,12 @@ export function App() {
     [activeId],
   );
 
-  const panToCard = useCallback((id: TurnId) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const shape = editor.getShape(id) as unknown as CardShape | undefined;
-    if (!shape) return;
-    editor.centerOnPoint(
-      { x: shape.x + CARD_WIDTH / 2, y: shape.y + shape.props.h / 2 },
-      SMOOTH_CAMERA,
-    );
-  }, []);
+  const panToCard = useCallback(
+    (id: TurnId) => {
+      focusCard(id);
+    },
+    [focusCard],
+  );
 
   const toggleMap = useCallback(() => {
     setMapOpen((open) => {
@@ -1025,18 +971,6 @@ export function App() {
     [closeMap, panToCard],
   );
 
-  // Wipe tldraw shapes so the syncer rebuilds from the freshly-swapped
-  // store turns. Used when starting a new canvas, resuming an archived one,
-  // or otherwise replacing the active turn set wholesale.
-  const repaintCanvas = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const ids = editor.getCurrentPageShapes().map((s) => s.id);
-    if (ids.length > 0) editor.deleteShapes(ids);
-    syncStoreToTldraw(editor);
-    relayoutAll(editor);
-  }, []);
-
   // Refresh the global server-side project list. Called on mount and
   // after any mutation that changes the list (create / delete / rename).
   const refreshProjects = useCallback(async () => {
@@ -1046,13 +980,12 @@ export function App() {
   }, []);
 
   // Switch the tab to a different project: clear the active canvas,
-  // flip activeProjectId, fetch the new state from the server, repaint
-  // tldraw. The WS subscription effect re-runs on activeProjectId
-  // change and resubscribes to the new project's channel.
+  // flip activeProjectId, fetch the new state from the server. React
+  // Flow re-renders from the recomputed nodes/edges automatically; no
+  // manual repaint needed. The WS subscription effect re-runs on
+  // activeProjectId change and resubscribes to the new project's channel.
   const switchToProject = useCallback(
     async (projectId: string) => {
-      const editor = editorRef.current;
-      if (!editor) return;
       logEvent('client.switch_project', { projectId });
       useConversation.getState().setActiveProjectId(projectId);
       useConversation.getState().clearActiveCanvas();
@@ -1098,27 +1031,14 @@ export function App() {
       const targetId = lastEmpty?.id ?? fallback?.id ?? null;
       setActiveId(targetId);
       setInput('');
-      repaintCanvas();
-      if (targetId) {
-        const shape = editor.getShape(targetId) as unknown as
-          | CardShape
-          | undefined;
-        if (shape) {
-          editor.centerOnPoint(
-            { x: shape.x + CARD_WIDTH / 2, y: shape.y + shape.props.h / 2 },
-            SMOOTH_CAMERA,
-          );
-        }
-      }
+      if (targetId) focusCard(targetId, { duration: 0 });
     },
-    [repaintCanvas],
+    [focusCard],
   );
 
   // Create a new canvas. Server provisions a fresh per-project agent;
   // returns the new project shell. We then switch the tab to it.
   const startNew = useCallback(async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
     logEvent('client.start_new', {});
     try {
       const res = await fetch('/api/projects', {
@@ -1132,16 +1052,13 @@ export function App() {
       }
       const data = (await res.json()) as { project: { id: string } };
       await refreshProjects();
-      // Switch immediately. The new project has no turns yet — the
-      // user's first input creates the user turn (locally + server-side
-      // via /api/generate's user-turn upsert).
       useConversation.getState().setActiveProjectId(data.project.id);
       useConversation.getState().clearActiveCanvas();
       const id = useConversation
         .getState()
         .createTurn({ role: 'user', parentId: null });
-      // Persist that empty user input card to the server so a second
-      // tab opening the same project sees the input slot.
+      // Persist the empty user input card so a second tab on this
+      // project sees the input slot.
       void upsertTurnRemote(data.project.id, {
         id,
         role: 'user',
@@ -1153,15 +1070,11 @@ export function App() {
       });
       setActiveId(id);
       setInput(START_SEED);
-      repaintCanvas();
-      editor.centerOnPoint(
-        { x: CARD_WIDTH / 2, y: CARD_HEIGHT_MIN / 2 + 90 },
-        SMOOTH_CAMERA,
-      );
+      focusCard(id, { duration: 0 });
     } catch (err) {
       console.error('startNew failed:', err);
     }
-  }, [repaintCanvas, refreshProjects]);
+  }, [refreshProjects, focusCard]);
 
   const deleteArchivedProject = useCallback(
     async (projectId: string) => {
@@ -1274,32 +1187,25 @@ export function App() {
     setInput(text);
   }
 
-  // Card height is purely a tldraw layout concern — measured by the React
-  // CardBody and written back to the shape (not the graph). Keep it editor-
-  // side and let repositionChain re-flow downstream cards.
+  // Card heights are measured by CardBody (ResizeObserver) and fed back
+  // here so dagre's next pass sizes columns correctly.
   const resizeActive = useCallback(
     (h: number) => {
-      const editor = editorRef.current;
-      if (!editor || !activeId) return;
-      const current = editor.getShape(activeId) as unknown as CardShape | undefined;
-      if (!current) return;
-      if (current.props.h !== h) {
-        editor.updateShape({ id: activeId, type: 'card', props: { h } });
-      }
-      repositionChain(editor, activeId);
+      if (!activeId) return;
+      // Feed the active card's measured height into the layout state.
+      const prev = heightsRef.current[activeId];
+      if (Math.abs((prev ?? 0) - h) < 1) return;
+      heightsRef.current = { ...heightsRef.current, [activeId]: h };
+      setHeights(heightsRef.current);
     },
     [activeId],
   );
 
   const resizeCard = useCallback((id: TurnId, h: number) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const current = editor.getShape(id) as unknown as CardShape | undefined;
-    if (!current) return;
-    if (Math.abs(current.props.h - h) >= 1) {
-      editor.updateShape({ id, type: 'card', props: { h } });
-    }
-    repositionChain(editor, id);
+    const prev = heightsRef.current[id];
+    if (Math.abs((prev ?? 0) - h) < 1) return;
+    heightsRef.current = { ...heightsRef.current, [id]: h };
+    setHeights(heightsRef.current);
   }, []);
 
   // Subscribe to the parent assistant's reflections + toggled labels via the
@@ -1380,26 +1286,39 @@ export function App() {
     <div
       style={{ position: 'fixed', inset: 0 }}
       onContextMenu={(e) => {
+        // Background right-click → menu without a card target. Card-level
+        // right-clicks are handled by ReactFlow's onNodeContextMenu.
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('.react-flow__node')) return;
         e.preventDefault();
-        const editor = editorRef.current;
-        if (!editor) return;
-        const point = editor.screenToPage({ x: e.clientX, y: e.clientY });
-        const hit = editor.getShapeAtPoint(point);
-        const card =
-          hit && hit.type === 'card'
-            ? (hit as unknown as CardShape)
-            : null;
-        setCtxMenu({ x: e.clientX, y: e.clientY, shape: card });
+        setCtxMenu({ x: e.clientX, y: e.clientY, turnId: null });
       }}
     >
-      <Tldraw
-        shapeUtils={shapeUtils}
-        components={components}
-        onMount={handleMount}
-        persistenceKey="river-2-graph"
-        hideUi
-        inferDarkMode={false}
-      />
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        onInit={onFlowInit}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        edgesFocusable={false}
+        elementsSelectable={false}
+        proOptions={{ hideAttribution: true }}
+        panOnScroll
+        panOnDrag
+        zoomOnScroll
+        minZoom={0.2}
+        maxZoom={2}
+        paneClickDistance={4}
+        onNodeContextMenu={(e, node) => {
+          e.preventDefault();
+          setCtxMenu({ x: e.clientX, y: e.clientY, turnId: node.id });
+        }}
+        style={{ background: '#f7f6f2' }}
+      >
+        <Background gap={24} color="rgba(0,0,0,0.06)" />
+      </ReactFlow>
 
       {/* Top-left toolbar */}
       <div
@@ -1513,7 +1432,8 @@ export function App() {
           </button>
           {mapOpen && (
             <MapMenu
-              editorRef={editorRef}
+              flowNodes={nodes}
+              heights={heights}
               activeId={activeId}
               onClose={closeMap}
               onCardClick={onMapCardClick}
@@ -1615,20 +1535,18 @@ export function App() {
           <RiverCtxMenu
             x={ctxMenu.x}
             y={ctxMenu.y}
-            shape={ctxMenu.shape}
+            turnId={ctxMenu.turnId}
             onNewConversation={() => { startNew(); setCtxMenu(null); }}
-            onBranch={() => { if (ctxMenu.shape) branchFrom(ctxMenu.shape.id); setCtxMenu(null); }}
+            onBranch={() => { if (ctxMenu.turnId) branchFrom(ctxMenu.turnId); setCtxMenu(null); }}
             onCopy={() => {
-              if (!ctxMenu.shape) return;
-              const turn = useConversation
-                .getState()
-                .getTurn(ctxMenu.shape.id);
+              if (!ctxMenu.turnId) return;
+              const turn = useConversation.getState().getTurn(ctxMenu.turnId);
               const text = turn?.content ?? '';
               if (text) void navigator.clipboard?.writeText(text);
               setCtxMenu(null);
             }}
             onDelete={() => {
-              if (ctxMenu.shape && confirm('Delete this card?')) deleteCard(ctxMenu.shape.id);
+              if (ctxMenu.turnId && confirm('Delete this card?')) deleteCard(ctxMenu.turnId);
               setCtxMenu(null);
             }}
           />
@@ -2522,24 +2440,32 @@ const MAP_HEIGHT = 320;
 const MAP_PAD = 14;
 
 /**
- * Build a list of MiniNodes by reading each turn's tldraw shape position,
- * then scaling the bounding box to fit `MAP_WIDTH × MAP_HEIGHT`. Streaming
- * / empty placeholder turns are skipped.
+ * Build a list of MiniNodes by reading each turn's React Flow node
+ * position, then scaling the bounding box to fit `MAP_WIDTH × MAP_HEIGHT`.
+ * Streaming / empty placeholder turns are skipped.
  */
 function buildMiniNodes(
   turns: Record<TurnId, import('./graph/types').Turn>,
-  editor: Editor | null,
+  flowNodes: Node[],
+  heights: Record<TurnId, number>,
 ): MiniNode[] {
-  if (!editor) return [];
+  const posById = new Map<string, { x: number; y: number }>();
+  for (const n of flowNodes) posById.set(n.id, n.position);
   const visible = Object.values(turns).filter(
     (t) => !t.streaming && t.content.trim().length > 0,
   );
   type Raw = { t: import('./graph/types').Turn; x: number; y: number; w: number; h: number };
   const raws: Raw[] = [];
   for (const t of visible) {
-    const shape = editor.getShape(t.id) as unknown as CardShape | undefined;
-    if (!shape) continue;
-    raws.push({ t, x: shape.x, y: shape.y, w: CARD_WIDTH, h: shape.props.h });
+    const pos = posById.get(t.id);
+    if (!pos) continue;
+    raws.push({
+      t,
+      x: pos.x,
+      y: pos.y,
+      w: CARD_WIDTH,
+      h: heights[t.id] ?? CARD_HEIGHT_HINT,
+    });
   }
   if (raws.length === 0) return [];
   const minX = Math.min(...raws.map((r) => r.x));
@@ -2592,20 +2518,22 @@ function buildMiniNodes(
  * Tapping/hovering reveals the card's label in the footer.
  */
 function MapMenu({
-  editorRef,
+  flowNodes,
+  heights,
   activeId,
   onClose,
   onCardClick,
 }: {
-  editorRef: React.MutableRefObject<Editor | null>;
+  flowNodes: Node[];
+  heights: Record<TurnId, number>;
   activeId: TurnId | null;
   onClose: () => void;
   onCardClick: (id: TurnId) => void;
 }) {
   const turns = useConversation((s) => s.turns);
   const nodes = useMemo(
-    () => buildMiniNodes(turns, editorRef.current),
-    [turns, editorRef],
+    () => buildMiniNodes(turns, flowNodes, heights),
+    [turns, flowNodes, heights],
   );
   const byId = useMemo(() => {
     const m = new Map<TurnId, MiniNode>();
@@ -2788,7 +2716,7 @@ const CTX_ITEM: React.CSSProperties = {
 function RiverCtxMenu({
   x,
   y,
-  shape,
+  turnId,
   onNewConversation,
   onBranch,
   onCopy,
@@ -2796,12 +2724,13 @@ function RiverCtxMenu({
 }: {
   x: number;
   y: number;
-  shape: CardShape | null;
+  turnId: TurnId | null;
   onNewConversation: () => void;
   onBranch: () => void;
   onCopy: () => void;
   onDelete: () => void;
 }) {
+  const turn = useConversation((s) => (turnId ? s.turns[turnId] : undefined));
   const menuW = 180;
   const menuRef = useRef<HTMLDivElement>(null);
   const left = Math.min(x, window.innerWidth - menuW - 12);
@@ -2838,7 +2767,7 @@ function RiverCtxMenu({
         New conversation
       </button>
 
-      {shape && (
+      {turn && (
         <>
           <div style={{ height: 1, background: '#eeedea', margin: '2px 8px' }} />
           <button
@@ -2863,7 +2792,7 @@ function RiverCtxMenu({
           <button
             type="button"
             style={CTX_ITEM}
-            disabled={!shape.props.content.trim()}
+            disabled={!turn.content.trim()}
             onMouseEnter={(e) => { (e.currentTarget.style.background = '#f3f2ee'); }}
             onMouseLeave={(e) => { (e.currentTarget.style.background = 'none'); }}
             onClick={onCopy}
@@ -2904,95 +2833,5 @@ function RiverCtxMenu({
   );
 }
 
-const CARD_GAP_Y = 40;
-const CARD_GAP_X = 80;
-const COLUMN_WIDTH = CARD_WIDTH + CARD_GAP_X;
-
-/**
- * Tidy-tree layout. Reads the parent→children relation from the graph store
- * (no longer from arrow bindings — those are a downstream view) and writes
- * x/y back to tldraw shapes. Positions remain a tldraw concern; structure is
- * a graph concern.
- */
-function relayoutAll(editor: Editor): void {
-  const turns = useConversation.getState().turns;
-  const turnIds = Object.keys(turns) as TurnId[];
-  if (turnIds.length === 0) return;
-
-  // parent → children
-  const children = new Map<TurnId, TurnId[]>();
-  const hasParent = new Set<TurnId>();
-  for (const id of turnIds) children.set(id, []);
-  for (const t of Object.values(turns)) {
-    if (t.parentId) {
-      children.get(t.parentId)?.push(t.id);
-      hasParent.add(t.id);
-    }
-  }
-  const root = turnIds.find((id) => !hasParent.has(id));
-  if (!root) return;
-
-  // Post-order: column count per subtree.
-  const cols = new Map<TurnId, number>();
-  function computeCols(id: TurnId): number {
-    const kids = children.get(id) ?? [];
-    if (kids.length === 0) {
-      cols.set(id, 1);
-      return 1;
-    }
-    let total = 0;
-    for (const c of kids) total += computeCols(c);
-    cols.set(id, total);
-    return total;
-  }
-  computeCols(root);
-
-  // Pre-order: assign x,y. Anchor at (0,0) — simple, predictable.
-  const originX = 0;
-  const originY = 0;
-  function assign(id: TurnId, colOffset: number, y: number): void {
-    const shape = editor.getShape(id) as unknown as CardShape | undefined;
-    if (!shape) return;
-    const x = originX + colOffset * COLUMN_WIDTH;
-    if (Math.abs(shape.x - x) >= 1 || Math.abs(shape.y - y) >= 1) {
-      editor.updateShape({ id, type: 'card', x, y });
-    }
-    const bottom = y + shape.props.h;
-    const kids = children.get(id) ?? [];
-    let offset = 0;
-    for (const c of kids) {
-      assign(c, colOffset + offset, bottom + CARD_GAP_Y);
-      offset += cols.get(c) ?? 1;
-    }
-  }
-  assign(root, 0, originY);
-}
-
-/**
- * After a card's measured height changes, re-flow each downstream child so
- * its top sits exactly CARD_GAP_Y below its parent's bottom. Reads the edge
- * relation from the graph store.
- */
-function repositionChain(editor: Editor, sourceId: TurnId): void {
-  const turns = useConversation.getState().turns;
-  const source = editor.getShape(sourceId) as unknown as CardShape | undefined;
-  if (!source) return;
-  const targetY = source.y + source.props.h + CARD_GAP_Y;
-  const children = Object.values(turns).filter((t) => t.parentId === sourceId);
-  for (const child of children) {
-    const childShape = editor.getShape(child.id) as unknown as
-      | CardShape
-      | undefined;
-    if (!childShape) continue;
-    if (Math.abs(childShape.y - targetY) >= 1) {
-      editor.updateShape({ id: child.id, type: 'card', y: targetY });
-    }
-    repositionChain(editor, child.id);
-  }
-}
-
-// `toRichText` and `TLShapeId` are still used by sync/edge creation —
-// re-export so unused imports don't trip TS strict mode if logic shifts.
-export type { TLShapeId };
-const _keepImports = toRichText;
-void _keepImports;
+// Layout (tidy-tree via dagre) lives in src/graph/layout.ts now.
+// React Flow renders nodes/edges directly from the array we hand it.

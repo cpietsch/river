@@ -858,7 +858,10 @@ Output ONLY a single JSON object whose keys are the absolute file paths and whos
 // also lose container state, but event history persists until deleted.
 app.delete('/api/session/:id', async (req, res) => {
   const id = req.params.id;
-  if (!id || !id.startsWith('ses_')) {
+  // Real session ids look like "sesn_011Ca…" — guard against accidental
+  // path traversal / empty params, but don't be picky about the exact
+  // prefix Anthropic uses (it's been "sesn_" historically).
+  if (!id || !/^sesn?_[A-Za-z0-9]+$/.test(id)) {
     res.status(400).json({ error: 'invalid session id' });
     return;
   }

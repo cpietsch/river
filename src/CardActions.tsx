@@ -24,6 +24,9 @@ export interface CardActions {
   // Clear every selected chip across the active chain's ancestors.
   clearAllChipSelections: () => void;
   branchFrom: (turnId: TLShapeId) => void;
+  // Submit an option pill verbatim as the next user turn. Bypasses the
+  // input field — the user already chose by tapping.
+  pickOption: (text: string) => void;
   // Toggle an inline [[term]] chip's selected state in-place on its card.
   // On submit, every selected chip across the active chain's ancestors
   // rides forward as userContext.

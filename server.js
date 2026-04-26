@@ -293,6 +293,8 @@ function describeTool(name, input) {
       return 'flagging an important card';
     case 'create_card':
       return 'creating a card on the canvas';
+    case 'present_options':
+      return 'presenting choices for you to pick from';
     default:
       return `using ${name}`;
   }
@@ -529,7 +531,44 @@ app.post('/api/generate', async (req, res) => {
           input: event.input ?? null,
         });
         let result;
-        if (event.name === 'create_card') {
+        if (event.name === 'present_options') {
+          // Attach a list of pick-from pills to a card. Forwards an SSE
+          // event the client applies to meta.options; ACKs the agent
+          // immediately so it never blocks.
+          const cardId = event.input?.card_id;
+          const rawOptions = Array.isArray(event.input?.options)
+            ? event.input.options
+            : [];
+          const cleaned = rawOptions
+            .filter((o) => typeof o === 'string')
+            .map((o) => o.trim())
+            .filter((o) => o.length > 0)
+            .slice(0, 6);
+          const turns = graph?.turns ?? {};
+          if (!cardId || !turns[cardId]) {
+            result = JSON.stringify({
+              ok: false,
+              error: `card_id ${cardId ?? '(missing)'} is not a card in the current graph`,
+            });
+          } else if (cleaned.length < 2) {
+            result = JSON.stringify({
+              ok: false,
+              error: 'present_options needs at least 2 options',
+            });
+          } else {
+            res.write(
+              `data: ${JSON.stringify({
+                type: 'options_presented',
+                cardId,
+                options: cleaned,
+              })}\n\n`,
+            );
+            result = JSON.stringify({
+              ok: true,
+              status: 'options shown to user as pills',
+            });
+          }
+        } else if (event.name === 'create_card') {
           // Agent-driven card creation: generate the new id server-side,
           // forward to the client as an SSE event so the store materializes
           // a turn at exactly that id, and ACK the agent with the id so it

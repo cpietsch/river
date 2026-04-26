@@ -64,6 +64,9 @@ interface ConversationStore {
   // meta.agentFlagReason so the UI can surface the why on hover. Distinct
   // from the user-driven `setEmphasis` so the two intents don't tangle.
   setAgentFlag: (id: TurnId, reason: string) => void;
+  // Discrete pick-from list the agent attached to a card via the
+  // present_options custom tool. Renders as a pill row below the prose.
+  setCardOptions: (id: TurnId, options: string[]) => void;
   toggleChipSelected: (id: TurnId, term: string) => void;
   clearChipsSelected: (id: TurnId) => void;
   removeSubtree: (rootId: TurnId) => TurnId[];
@@ -175,6 +178,23 @@ export const useConversation = create<ConversationStore>()(
         turns: {
           ...s.turns,
           [id]: { ...t, meta: { ...t.meta, predictions } },
+        },
+      };
+    });
+  },
+
+  setCardOptions: (id, options) => {
+    set((s) => {
+      const t = s.turns[id];
+      if (!t) return s;
+      const cleaned = (Array.isArray(options) ? options : [])
+        .map((o) => (typeof o === 'string' ? o.trim() : ''))
+        .filter((o) => o.length > 0)
+        .slice(0, 6);
+      return {
+        turns: {
+          ...s.turns,
+          [id]: { ...t, meta: { ...t.meta, options: cleaned } },
         },
       };
     });

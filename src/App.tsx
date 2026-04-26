@@ -444,6 +444,15 @@ export function App() {
                   content: c.content,
                 });
               },
+              onCardOptions: (o) => {
+                logEvent('client.card_options', {
+                  cardId: o.cardId,
+                  count: o.options.length,
+                });
+                useConversation
+                  .getState()
+                  .setCardOptions(o.cardId as TurnId, o.options);
+              },
               onProposal: (p) => {
                 logEvent('client.branch_proposal_received', {
                   proposalId: p.proposalId,
@@ -647,6 +656,20 @@ export function App() {
       }
     },
     [createBranchUserTurn],
+  );
+
+  // Tap-to-submit for option pills the agent attached to a card via
+  // present_options. The pill text is the literal next user message —
+  // pushes it through the same handleSubmit path the typed input uses,
+  // so any user-side toggled pills / selected chips merge in exactly as
+  // if the user had typed and hit send.
+  const pickOption = useCallback(
+    (text: string) => {
+      if (!text.trim()) return;
+      logEvent('client.option_picked', { text });
+      void handleSubmit(text);
+    },
+    [handleSubmit],
   );
 
   const acceptProposal = useCallback(
@@ -978,6 +1001,7 @@ export function App() {
     <CardActionsContext.Provider
       value={{
         branchFrom,
+        pickOption,
         toggleChipSelected,
         togglePrediction,
         toggleEmphasis,

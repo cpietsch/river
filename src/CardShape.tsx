@@ -297,6 +297,55 @@ function CardBody({ shape }: { shape: CardShape }) {
             {activityText}
           </div>
         )}
+
+        {/* Pick-from option pills the agent attached to this card via
+            present_options. Tap one to submit it as the next user turn —
+            the user doesn't have to retype the choice. Sits inside the
+            card body so it flows with content, above the action-icon row. */}
+        {(shape.meta as { options?: string[] } | undefined)?.options &&
+          (shape.meta as { options?: string[] }).options!.length > 0 && (
+            <div
+              style={{
+                marginTop: 12,
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 6,
+              }}
+            >
+              {(shape.meta as { options?: string[] }).options!.map((opt, i) => (
+                <button
+                  key={`${i}-${opt}`}
+                  type="button"
+                  onPointerDown={tap(() => actions?.pickOption(opt))}
+                  style={{
+                    display: 'inline-block',
+                    padding: '6px 12px',
+                    background: '#fff',
+                    color: '#2e6ecf',
+                    border: '1px solid #2e6ecf',
+                    borderRadius: 999,
+                    font: 'inherit',
+                    fontSize: 13,
+                    fontFamily: 'system-ui, -apple-system, sans-serif',
+                    cursor: 'pointer',
+                    WebkitTapHighlightColor: 'transparent',
+                    lineHeight: 1.3,
+                    textAlign: 'left',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#2e6ecf';
+                    e.currentTarget.style.color = '#fff';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = '#fff';
+                    e.currentTarget.style.color = '#2e6ecf';
+                  }}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          )}
       </div>
 
       {/* Agent flag indicator — appears top-right when the brain has

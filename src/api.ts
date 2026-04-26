@@ -92,6 +92,14 @@ export type CardCreation = {
   content: string;
 };
 
+// Pick-from options the agent attached to a card via the present_options
+// custom tool. Rendered as tappable pills below the card's prose; tapping
+// a pill submits the option as the next user turn.
+export type CardOptions = {
+  cardId: string;
+  options: string[];
+};
+
 /**
  * Streams the assistant response. `onDelta` is called for each text chunk;
  * `onSessionId` fires once with the session id (existing or newly minted)
@@ -116,6 +124,7 @@ export async function streamGenerate(
     onActivity?: (text: string) => void;
     onCardFlag?: (f: CardFlag) => void;
     onCardCreated?: (c: CardCreation) => void;
+    onCardOptions?: (o: CardOptions) => void;
   } = {},
 ): Promise<string> {
   const {
@@ -131,6 +140,7 @@ export async function streamGenerate(
     onActivity,
     onCardFlag,
     onCardCreated,
+    onCardOptions,
   } = opts;
   const res = await fetch('/api/generate', {
     method: 'POST',
@@ -206,6 +216,17 @@ export async function streamGenerate(
             parentId: parsed.parentId,
             role: parsed.role === 'user' ? 'user' : 'assistant',
             content: parsed.content,
+          });
+        } else if (
+          parsed.type === 'options_presented' &&
+          typeof parsed.cardId === 'string' &&
+          Array.isArray(parsed.options)
+        ) {
+          onCardOptions?.({
+            cardId: parsed.cardId,
+            options: parsed.options.filter(
+              (o: unknown): o is string => typeof o === 'string',
+            ),
           });
         } else if (parsed.type === 'error') {
           throw new Error(String(parsed.message ?? 'stream error'));

@@ -50,6 +50,12 @@ BRANCH SUGGESTIONS: you can also propose new branches the user might explore. Ca
 
 FLAGGING IMPORTANT CARDS: call flag_card(card_id, reason) when you (or the user just now) landed on a turning-point insight — a critical claim, a load-bearing decision, a counter-intuitive finding, the kind of card the user will want to find again later. The user sees the card emphasized on the canvas with your reason on hover. Aim for ~0-1 flags per turn; on turns where the prior assistant card or the current user message contains a genuinely pivotal insight, flag it. Don't flag every interesting card — flag the ones that change how the user should think going forward. Pick card_id from the BRANCH PATH or get_graph_summary; never invent ids. Frequently the right card to flag is the most recent assistant turn (not the user's question).
 
+PRESENTING OPTIONS: when your response asks the user to pick from a discrete set (which project? which framework? quick vs careful?), call present_options(card_id, options) so the user gets tappable pills under your card. Each pill, when tapped, becomes the user's next message — they don't have to retype "the transit table" themselves. card_id is YOUR RESPONSE CARD. options is an array of 2-6 short strings (≤40 chars each), in the same wording you'd want them to appear as pills. Skip when:
+- The choice is binary and obvious from the prose.
+- The "options" are open-ended ("anything you've been chewing on") — pills imply a closed set.
+- You're not actually asking for a pick.
+You can still mention the options in prose; the pills are an additional affordance, not a replacement.
+
 WORKING ON THE CANVAS — CREATING CARDS DIRECTLY: when the user's request naturally produces multiple distinct outputs, materialize each as its own card via create_card(parent_id, content). Examples that should split:
 - "rewrite each of these 5 intros" → one card per intro
 - "give me 3 options for X" → one card per option
@@ -178,6 +184,31 @@ const CUSTOM_TOOLS = [
         },
       },
       required: ['parent_id', 'content'],
+    },
+  },
+  {
+    type: 'custom',
+    name: 'present_options',
+    description:
+      'Attach a list of tappable pill-options to a card so the user can pick one without retyping. Use ONLY when your prose explicitly asks the user to choose from a discrete, closed set (which project, which framework, which option). Each pill becomes the user\'s next message verbatim when tapped. Skip for open-ended questions and for binary yes/no questions where prose is enough.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        card_id: {
+          type: 'string',
+          description:
+            'The card id to attach options to — usually YOUR RESPONSE CARD (provided in the kickoff). Format "shape:abc123". NEVER invent ids.',
+        },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Array of 2-6 short pill labels (≤ ~40 chars each). Phrased the way the option should appear as the user\'s next message — first person if the user is speaking, otherwise the literal choice ("the transit table", "the museum scale piece", etc).',
+          minItems: 2,
+          maxItems: 6,
+        },
+      },
+      required: ['card_id', 'options'],
     },
   },
   {

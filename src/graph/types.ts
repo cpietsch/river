@@ -31,6 +31,11 @@ export interface TurnMeta {
   // Lives alongside emphasis = 2 (which is the visual cue) — this carries
   // the *why* so the user can hover to read it. Cleared on un-flag.
   agentFlagReason?: string;
+  // Discrete options the agent presented for the user to pick from, via
+  // the present_options custom tool. Renders as a pill row at the bottom
+  // of the assistant card; tapping a pill submits that option as the
+  // user's next turn. Short labels (≤ ~40 chars), 2-6 entries.
+  options?: string[];
 }
 
 export interface Turn {

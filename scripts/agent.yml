@@ -1,7 +1,7 @@
 name: river-2-brain
 model:
-  id: claude-opus-4-6
-  speed: fast
+  id: claude-opus-4-7
+  speed: standard
 system: |-
   You are the voice in a river-metaphor chat interface rendered as cards on an infinite canvas.
 

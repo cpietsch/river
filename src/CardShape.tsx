@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   HTMLContainer,
   Rectangle2d,
@@ -216,7 +216,10 @@ function CardBody({ shape }: { shape: CardShape }) {
           '"Source Serif 4", "Source Serif Pro", "Charter", "Iowan Old Style", "Georgia", "Times New Roman", serif',
         fontSize: 16,
         lineHeight: 1.65,
-        overflow: 'hidden',
+        // Visible (not hidden) so the branch + button can sit just below the
+        // card without being clipped. Card content has no background overflow
+        // — only the absolutely-positioned + extends past the bounds.
+        overflow: 'visible',
         pointerEvents: 'all',
         boxShadow: '0 1px 3px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04)',
       }}
@@ -390,8 +393,7 @@ function CardBody({ shape }: { shape: CardShape }) {
         </div>
       )}
 
-      {/* Action icons: same two on every card (branch + like), bottom-right so
-          they never overlap text. Faded when idle, prominent on hover. */}
+      {/* Like icon — bottom-right inside the card. Faded when idle. */}
       <div
         className="river-card-actions"
         style={{
@@ -404,18 +406,6 @@ function CardBody({ shape }: { shape: CardShape }) {
           transition: 'opacity 120ms',
         }}
       >
-        <IconButton
-          label="branch"
-          onClick={() => actions?.branchFrom(shape.id)}
-        >
-          <path
-            d="M7 5v9a4 4 0 0 0 4 4h7M15 14l3 3-3 3"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </IconButton>
         <IconButton
           label={isEmphasized ? 'unlike' : 'like (priority)'}
           onClick={() => actions?.toggleEmphasis(shape.id)}
@@ -430,6 +420,13 @@ function CardBody({ shape }: { shape: CardShape }) {
           />
         </IconButton>
       </div>
+
+      {/* Branch affordance — a + button just below the card. Sits in the
+          gap between this card and any child, on top of the arrow line.
+          Tapping spawns a new branch (child user input) under this card.
+          Outside the card visually so it reads as "add another path from
+          here" rather than as a card action. */}
+      <BranchPlusButton onClick={() => actions?.branchFrom(shape.id)} />
     </HTMLContainer>
   );
 }
@@ -465,6 +462,54 @@ function IconButton({
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
         {children}
+      </svg>
+    </button>
+  );
+}
+
+function BranchPlusButton({ onClick }: { onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="branch"
+      title="Branch from this card"
+      onPointerDown={tap(onClick)}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      style={{
+        position: 'absolute',
+        // Centered on the parent→child arrow column, but pulled up close to
+        // the card edge so it sits at the top of the gap — above the visible
+        // arrow shaft, not floating in the middle of it.
+        bottom: -16,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 22,
+        height: 22,
+        padding: 0,
+        background: hover ? '#fff' : 'rgba(255,255,255,0.7)',
+        border: `1px solid ${hover ? '#666' : '#bbb'}`,
+        borderRadius: 999,
+        color: hover ? '#111' : '#777',
+        cursor: 'pointer',
+        opacity: hover ? 1 : 0.55,
+        transition: 'opacity 120ms, color 120ms, background 120ms, border-color 120ms',
+        WebkitTapHighlightColor: 'transparent',
+        boxShadow: hover ? '0 1px 4px rgba(0,0,0,0.15)' : 'none',
+        zIndex: 2,
+      }}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path
+          d="M12 5v14M5 12h14"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
       </svg>
     </button>
   );

@@ -21,7 +21,6 @@ import {
   fetchAgentPredictions,
   fetchInfo,
   fetchLabels,
-  fetchMemory,
   fetchProjects,
   fetchProjectState,
   logEvent,
@@ -59,6 +58,10 @@ const components: TLComponents = {
 interface CtxMenu {
   x: number;
   y: number;
+  // Page-space (tldraw canvas) coords of the right-click — used by
+  // startNewStream so a new root materializes where the user clicked.
+  pageX: number;
+  pageY: number;
   shape: CardShape | null;
 }
 
@@ -72,14 +75,8 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
-  const [mapOpen, setMapOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const proposals = useConversation((s) => s.proposals);
-  const [memoryOpen, setMemoryOpen] = useState(false);
-  const [memoryFiles, setMemoryFiles] = useState<Record<string, string> | null>(
-    null,
-  );
-  const [memoryBusy, setMemoryBusy] = useState(false);
   const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const labelInFlightRef = useRef(false);
 
@@ -826,6 +823,71 @@ export function App() {
     [activeId, input, runTurnFrom, getParentId, gatherSelectedChips, gatherEmphasized],
   );
 
+  // Start a NEW stream on the current canvas — a parentId=null user input
+  // sitting parallel to existing trees rather than branching off any card.
+  // Lets the user open a fresh investigation without losing the work
+  // already on the board. Optional pageX/pageY (in tldraw page coords) places
+  // the new root where the user right-clicked; otherwise defaults to the
+  // right of the rightmost existing tree.
+  const startNewStream = useCallback(
+    (pageX?: number, pageY?: number) => {
+      const editor = editorRef.current;
+      if (!editor) return null;
+      const store = useConversation.getState();
+      const projectId = store.activeProjectId;
+      if (!projectId) return null;
+      // Discard a previously-active empty user card (same orphan-cleanup
+      // rule as branchFrom). Without this, opening "new stream here" on a
+      // fresh canvas leaves the original empty input dangling alongside
+      // the new one.
+      if (activeId) {
+        const current = store.getTurn(activeId);
+        if (current && current.role === 'user' && current.content.trim() === '') {
+          store.removeSubtree(activeId);
+          void deleteSubtreeRemote(projectId, activeId);
+        }
+      }
+      const newId = useConversation
+        .getState()
+        .createTurn({ role: 'user', parentId: null });
+      void upsertTurnRemote(projectId, {
+        id: newId,
+        role: 'user',
+        content: '',
+        parentId: null,
+        emphasis: 1,
+        streaming: false,
+        meta: {},
+      });
+      // Pre-position the new root before relayoutAll runs so its subtree
+      // anchors at the chosen spot. If no coords were passed, place to the
+      // right of every existing card so trees don't overlap.
+      let x = pageX;
+      let y = pageY;
+      if (x === undefined || y === undefined) {
+        const allShapes = editor.getCurrentPageShapes() as unknown as CardShape[];
+        const maxRight = allShapes.reduce(
+          (m, s) => Math.max(m, s.x + (s.props?.w ?? CARD_WIDTH)),
+          -Infinity,
+        );
+        x = isFinite(maxRight) ? maxRight + CARD_GAP_X * 2 : 0;
+        y = 0;
+      }
+      const shape = editor.getShape(newId) as unknown as CardShape | undefined;
+      if (shape) {
+        editor.updateShape({ id: newId, type: 'card', x, y });
+      }
+      setActiveId(newId);
+      logEvent('client.new_stream', { newId });
+      editor.centerOnPoint(
+        { x: x + CARD_WIDTH / 2, y: y + CARD_HEIGHT_MIN / 2 },
+        SMOOTH_CAMERA,
+      );
+      return newId;
+    },
+    [activeId],
+  );
+
   // Branching: createTurn under sourceId; the syncer wires up the arrow.
   const createBranchUserTurn = useCallback((sourceId: TurnId): TurnId | null => {
     const store = useConversation.getState();
@@ -858,13 +920,40 @@ export function App() {
 
   const branchFrom = useCallback(
     (turnId: TurnId) => {
+      // Discard a previously-active empty branch input before opening the
+      // new one. Without this, clicking + on a sequence of cards leaves a
+      // trail of orphaned empty user turns dangling in the tree.
+      const store = useConversation.getState();
+      if (activeId && activeId !== turnId) {
+        const current = store.getTurn(activeId);
+        if (current && current.role === 'user' && current.content.trim() === '') {
+          const projectId = store.activeProjectId;
+          store.removeSubtree(activeId);
+          void deleteSubtreeRemote(projectId, activeId);
+        }
+      }
       const newId = createBranchUserTurn(turnId);
       if (newId) {
         setActiveId(newId);
         logEvent('client.branch', { fromId: turnId, newId });
+        // Refresh predictions for the source card. A card's stored
+        // predictions are frozen at the moment it originally streamed; if
+        // the user branches off an older card mid-conversation those pills
+        // would be stale. Re-run /api/agents with the chain ending at
+        // turnId so the active input shows pills tailored to *this*
+        // branching point. Fire-and-forget — the input subscribes to the
+        // store and re-renders when predictions land.
+        const history = historyFor(turnId);
+        if (history.length > 0) {
+          fetchAgentPredictions(history)
+            .then((predictions) => {
+              useConversation.getState().setPredictions(turnId, predictions);
+            })
+            .catch(() => {});
+        }
       }
     },
-    [createBranchUserTurn],
+    [activeId, createBranchUserTurn, historyFor],
   );
 
   // Tap-to-submit for option pills the agent attached to a card via
@@ -886,6 +975,12 @@ export function App() {
 
   const acceptProposal = useCallback(
     (p: BranchProposal) => {
+      // Don't accept while another turn is streaming: runTurnFrom would
+      // early-return on its `busy` guard, leaving the empty user card we
+      // created here orphaned with no prompt and no assistant child.
+      // Keep the proposal in the panel so the user can re-click once the
+      // current stream lands.
+      if (busy) return;
       const projectId = useConversation.getState().activeProjectId;
       const turn = useConversation.getState().getTurn(p.parentId as TurnId);
       if (!turn) {
@@ -912,7 +1007,7 @@ export function App() {
         activate: true,
       });
     },
-    [createBranchUserTurn, runTurnFrom],
+    [busy, createBranchUserTurn, runTurnFrom],
   );
 
   const dismissProposal = useCallback((proposalId: string) => {
@@ -973,56 +1068,6 @@ export function App() {
       }
     },
     [activeId],
-  );
-
-  const panToCard = useCallback((id: TurnId) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const shape = editor.getShape(id) as unknown as CardShape | undefined;
-    if (!shape) return;
-    editor.centerOnPoint(
-      { x: shape.x + CARD_WIDTH / 2, y: shape.y + shape.props.h / 2 },
-      SMOOTH_CAMERA,
-    );
-  }, []);
-
-  const toggleMap = useCallback(() => {
-    setMapOpen((open) => {
-      const next = !open;
-      if (next) {
-        const turnCount = Object.keys(useConversation.getState().turns).length;
-        logEvent('client.open_map', { turnCount });
-      }
-      return next;
-    });
-  }, []);
-
-  const closeMap = useCallback(() => setMapOpen(false), []);
-
-  const openMemory = useCallback(async () => {
-    setMemoryOpen(true);
-    setMemoryBusy(true);
-    setMemoryFiles(null);
-    logEvent('client.open_memory', {});
-    try {
-      const { files } = await fetchMemory();
-      setMemoryFiles(files);
-    } finally {
-      setMemoryBusy(false);
-    }
-  }, []);
-
-  const closeMemory = useCallback(() => {
-    setMemoryOpen(false);
-  }, []);
-
-  const onMapCardClick = useCallback(
-    (id: TurnId) => {
-      logEvent('client.map_jump', { id });
-      closeMap();
-      panToCard(id);
-    },
-    [closeMap, panToCard],
   );
 
   // Wipe tldraw shapes so the syncer rebuilds from the freshly-swapped
@@ -1389,7 +1434,7 @@ export function App() {
           hit && hit.type === 'card'
             ? (hit as unknown as CardShape)
             : null;
-        setCtxMenu({ x: e.clientX, y: e.clientY, shape: card });
+        setCtxMenu({ x: e.clientX, y: e.clientY, pageX: point.x, pageY: point.y, shape: card });
       }}
     >
       <Tldraw
@@ -1487,64 +1532,6 @@ export function App() {
           )}
         </div>
 
-        <div style={{ position: 'relative' }}>
-          <button
-            type="button"
-            onClick={toggleMap}
-            aria-label="Show conversation map"
-            aria-expanded={mapOpen}
-            data-testid="toggle-map"
-            title="Open the canvas map — every card listed as a tree, click to jump."
-            style={{
-              ...toolbarBtn,
-              background: mapOpen ? '#111' : '#fff',
-              color: mapOpen ? '#fff' : '#111',
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M4 6h6M4 12h10M4 18h13"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-              />
-            </svg>
-            map
-          </button>
-          {mapOpen && (
-            <MapMenu
-              editorRef={editorRef}
-              activeId={activeId}
-              onClose={closeMap}
-              onCardClick={onMapCardClick}
-            />
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={openMemory}
-          disabled={memoryBusy}
-          aria-label="Inspect agent memory"
-          data-testid="open-memory"
-          title="See what the agent has written to its persistent memory store across sessions on this canvas."
-          style={{
-            ...toolbarBtn,
-            color: memoryBusy ? '#aaa' : '#111',
-            cursor: memoryBusy ? 'default' : 'pointer',
-            opacity: memoryBusy ? 0.6 : 1,
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path
-              d="M9.5 4a3.5 3.5 0 0 0-3.5 3.5v.5a3 3 0 0 0-3 3v1a3 3 0 0 0 3 3v.5A3.5 3.5 0 0 0 9.5 19h.5V4h-.5zM14.5 4a3.5 3.5 0 0 1 3.5 3.5v.5a3 3 0 0 1 3 3v1a3 3 0 0 1-3 3v.5a3.5 3.5 0 0 1-3.5 3.5H14V4h.5z"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinejoin="round"
-            />
-          </svg>
-          memory
-        </button>
       </div>
 
       {/* Top-right floating panel: agent's branch proposals */}
@@ -1553,15 +1540,6 @@ export function App() {
           proposals={proposals}
           onAccept={acceptProposal}
           onDismiss={dismissProposal}
-        />
-      )}
-
-      {/* Memory inspector overlay */}
-      {memoryOpen && (
-        <MemoryPanel
-          files={memoryFiles}
-          busy={memoryBusy}
-          onClose={closeMemory}
         />
       )}
 
@@ -1616,6 +1594,10 @@ export function App() {
             x={ctxMenu.x}
             y={ctxMenu.y}
             shape={ctxMenu.shape}
+            onNewStream={() => {
+              startNewStream(ctxMenu.pageX, ctxMenu.pageY);
+              setCtxMenu(null);
+            }}
             onNewConversation={() => { startNew(); setCtxMenu(null); }}
             onBranch={() => { if (ctxMenu.shape) branchFrom(ctxMenu.shape.id); setCtxMenu(null); }}
             onCopy={() => {
@@ -1678,192 +1660,6 @@ const toolbarBtn: React.CSSProperties = {
   minHeight: 40,
 };
 
-/* ─── Memory inspector ─── */
-
-/**
- * Modal-ish overlay that lists every file in the agent's persistent memory
- * store with its contents. Spawned by the "memory" toolbar button. Shows
- * a loading state while the server fetches (a fresh session has to read
- * the store via bash). Empty state when the agent hasn't written anything
- * yet — most canvases will start there.
- */
-function MemoryPanel({
-  files,
-  busy,
-  onClose,
-}: {
-  files: Record<string, string> | null;
-  busy: boolean;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  const entries = files ? Object.entries(files).sort() : [];
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Agent memory"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(20, 18, 14, 0.42)',
-        backdropFilter: 'blur(2px)',
-        zIndex: 2000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 'max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom))',
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          maxWidth: 720,
-          width: '100%',
-          maxHeight: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          background: '#fbfaf6',
-          border: '1px solid #1a1a1a',
-          borderRadius: 14,
-          boxShadow: '0 16px 48px rgba(0,0,0,0.24)',
-          overflow: 'hidden',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          color: '#1a1a1a',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '14px 18px',
-            borderBottom: '1px solid #eeedea',
-            fontSize: 12,
-            letterSpacing: 0.5,
-            textTransform: 'uppercase',
-            color: '#6b6660',
-          }}
-        >
-          <span>
-            agent memory
-            {busy ? ' · loading…' : files ? ` · ${entries.length} file${entries.length === 1 ? '' : 's'}` : ''}
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            style={{
-              border: 'none',
-              background: 'none',
-              padding: 4,
-              cursor: 'pointer',
-              color: '#6b6660',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-        <div
-          style={{
-            flex: '1 1 auto',
-            overflowY: 'auto',
-            padding: 18,
-          }}
-        >
-          {busy && (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                color: '#6b6660',
-                fontStyle: 'italic',
-              }}
-            >
-              <span
-                aria-hidden
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  background: '#2e6ecf',
-                  boxShadow: '0 0 0 4px rgba(46,110,207,0.18)',
-                }}
-              />
-              reading the agent's memory store…
-            </div>
-          )}
-          {!busy && files && entries.length === 0 && (
-            <div style={{ color: '#9a9590', lineHeight: 1.5, fontSize: 14 }}>
-              The agent hasn't written anything to memory yet. As you have
-              conversations, it'll save durable notes (preferences,
-              recurring topics, conclusions worth keeping) here. They persist
-              across all canvases on this account.
-            </div>
-          )}
-          {!busy && files && entries.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {entries.map(([path, content]) => (
-                <div
-                  key={path}
-                  style={{
-                    border: '1px solid #eeedea',
-                    borderRadius: 10,
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div
-                    style={{
-                      padding: '8px 12px',
-                      background: '#f3f2ee',
-                      fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-                      fontSize: 12,
-                      color: '#3a3835',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                    title={path}
-                  >
-                    {path}
-                  </div>
-                  <pre
-                    style={{
-                      margin: 0,
-                      padding: '10px 12px',
-                      fontFamily: '"Source Serif 4", Georgia, serif',
-                      fontSize: 14,
-                      lineHeight: 1.55,
-                      color: '#1a1a1a',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                    }}
-                  >
-                    {content}
-                  </pre>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ─── Branch proposals panel ─── */
 
@@ -2500,271 +2296,6 @@ function shortenSessionId(id: string): string {
   return `${head}_…${tail}`;
 }
 
-/* ─── Map menu (spatial mini-map) ─── */
-
-interface MiniNode {
-  id: TurnId;
-  role: 'user' | 'assistant';
-  label: string;
-  // Box position in *minimap* coordinates (already scaled + padded).
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  // Center point — used as edge endpoint to/from this node.
-  cx: number;
-  cy: number;
-  parentId: TurnId | null;
-}
-
-const MAP_WIDTH = 280;
-const MAP_HEIGHT = 320;
-const MAP_PAD = 14;
-
-/**
- * Build a list of MiniNodes by reading each turn's tldraw shape position,
- * then scaling the bounding box to fit `MAP_WIDTH × MAP_HEIGHT`. Streaming
- * / empty placeholder turns are skipped.
- */
-function buildMiniNodes(
-  turns: Record<TurnId, import('./graph/types').Turn>,
-  editor: Editor | null,
-): MiniNode[] {
-  if (!editor) return [];
-  const visible = Object.values(turns).filter(
-    (t) => !t.streaming && t.content.trim().length > 0,
-  );
-  type Raw = { t: import('./graph/types').Turn; x: number; y: number; w: number; h: number };
-  const raws: Raw[] = [];
-  for (const t of visible) {
-    const shape = editor.getShape(t.id) as unknown as CardShape | undefined;
-    if (!shape) continue;
-    raws.push({ t, x: shape.x, y: shape.y, w: CARD_WIDTH, h: shape.props.h });
-  }
-  if (raws.length === 0) return [];
-  const minX = Math.min(...raws.map((r) => r.x));
-  const minY = Math.min(...raws.map((r) => r.y));
-  const maxX = Math.max(...raws.map((r) => r.x + r.w));
-  const maxY = Math.max(...raws.map((r) => r.y + r.h));
-  const spanX = Math.max(1, maxX - minX);
-  const spanY = Math.max(1, maxY - minY);
-  // Fit into the inner area (after pad on each side). Preserve aspect by
-  // taking the smaller scale.
-  const innerW = MAP_WIDTH - MAP_PAD * 2;
-  const innerH = MAP_HEIGHT - MAP_PAD * 2;
-  const scale = Math.min(innerW / spanX, innerH / spanY);
-  // Center the scaled graph in the available area.
-  const offX = (MAP_WIDTH - spanX * scale) / 2;
-  const offY = (MAP_HEIGHT - spanY * scale) / 2;
-  // Strip markdown / error noise from the fallback so labels read cleanly
-  // when Haiku hasn't filled in yet.
-  const cleanFallback = (raw: string) => {
-    if (raw.startsWith('[error:')) return 'failed turn';
-    return stripMarkdown(raw)
-      .plain.trim()
-      .replace(/\s+/g, ' ')
-      .slice(0, 80);
-  };
-  return raws.map(({ t, x, y, w, h }) => {
-    const sx = (x - minX) * scale + offX;
-    const sy = (y - minY) * scale + offY;
-    const sw = Math.max(8, w * scale);
-    const sh = Math.max(6, h * scale);
-    return {
-      id: t.id,
-      role: t.role,
-      label: (t.meta.label ?? cleanFallback(t.content)).trim() || '…',
-      x: sx,
-      y: sy,
-      w: sw,
-      h: sh,
-      cx: sx + sw / 2,
-      cy: sy + sh / 2,
-      parentId: t.parentId,
-    };
-  });
-}
-
-/**
- * Dropdown panel anchored to the map toolbar button. Renders the canvas as
- * a scaled mini-map: each card a small rect at its actual position, edges
- * showing parent → child links. Click a rect to pan the camera there.
- * Tapping/hovering reveals the card's label in the footer.
- */
-function MapMenu({
-  editorRef,
-  activeId,
-  onClose,
-  onCardClick,
-}: {
-  editorRef: React.MutableRefObject<Editor | null>;
-  activeId: TurnId | null;
-  onClose: () => void;
-  onCardClick: (id: TurnId) => void;
-}) {
-  const turns = useConversation((s) => s.turns);
-  const nodes = useMemo(
-    () => buildMiniNodes(turns, editorRef.current),
-    [turns, editorRef],
-  );
-  const byId = useMemo(() => {
-    const m = new Map<TurnId, MiniNode>();
-    for (const n of nodes) m.set(n.id, n);
-    return m;
-  }, [nodes]);
-  const [hoverId, setHoverId] = useState<TurnId | null>(null);
-  const focused = hoverId ?? activeId ?? null;
-  const focusNode = focused ? byId.get(focused) ?? null : null;
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  return (
-    <>
-      <div
-        onClick={onClose}
-        style={{ position: 'fixed', inset: 0, zIndex: 1499 }}
-        aria-hidden
-      />
-      <div
-        role="menu"
-        aria-label="Canvas map"
-        style={{
-          position: 'absolute',
-          top: 'calc(100% + 6px)',
-          left: 0,
-          width: MAP_WIDTH + 16,
-          background: '#fff',
-          border: '1px solid rgba(26,26,26,0.14)',
-          borderRadius: 12,
-          boxShadow:
-            '0 10px 30px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06)',
-          padding: 8,
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          fontSize: 12,
-          color: '#1a1a1a',
-          zIndex: 1500,
-        }}
-      >
-        {nodes.length === 0 ? (
-          <div style={{ padding: '14px 12px', color: '#9a9590' }}>
-            no cards yet
-          </div>
-        ) : (
-          <>
-            <svg
-              width={MAP_WIDTH}
-              height={MAP_HEIGHT}
-              viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-              style={{
-                display: 'block',
-                background: '#f7f6f2',
-                borderRadius: 8,
-              }}
-              role="img"
-              aria-label="Canvas mini-map"
-            >
-              {/* Edges: parent → child centerline */}
-              <g stroke="rgba(26,26,26,0.22)" strokeWidth={1} fill="none">
-                {nodes.map((n) => {
-                  if (!n.parentId) return null;
-                  const p = byId.get(n.parentId);
-                  if (!p) return null;
-                  return (
-                    <line
-                      key={`e-${n.id}`}
-                      x1={p.cx}
-                      y1={p.cy}
-                      x2={n.cx}
-                      y2={n.cy}
-                    />
-                  );
-                })}
-              </g>
-              {/* Cards */}
-              {nodes.map((n) => {
-                const isActive = n.id === activeId;
-                const isFocused = n.id === focused;
-                return (
-                  <g
-                    key={n.id}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => onCardClick(n.id)}
-                    onMouseEnter={() => setHoverId(n.id)}
-                    onMouseLeave={() =>
-                      setHoverId((c) => (c === n.id ? null : c))
-                    }
-                  >
-                    <rect
-                      x={n.x}
-                      y={n.y}
-                      width={n.w}
-                      height={n.h}
-                      rx={2}
-                      fill={
-                        n.role === 'user'
-                          ? isActive
-                            ? '#2e6ecf'
-                            : 'rgba(46,110,207,0.55)'
-                          : 'rgba(26,26,26,0.55)'
-                      }
-                      stroke={
-                        isFocused ? '#1a1a1a' : 'rgba(26,26,26,0.10)'
-                      }
-                      strokeWidth={isFocused ? 1.5 : 0.5}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-            <div
-              style={{
-                marginTop: 8,
-                padding: '6px 8px',
-                minHeight: 30,
-                background: '#f7f6f2',
-                borderRadius: 6,
-                color: focusNode ? '#1a1a1a' : '#9a9590',
-                lineHeight: 1.3,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-              title={focusNode?.label ?? ''}
-            >
-              {focusNode ? (
-                <>
-                  <span
-                    aria-hidden
-                    style={{
-                      display: 'inline-block',
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      background:
-                        focusNode.role === 'user' ? '#2e6ecf' : '#1a1a1a',
-                      opacity: focusNode.role === 'user' ? 1 : 0.55,
-                      marginRight: 8,
-                      verticalAlign: 'middle',
-                    }}
-                  />
-                  {focusNode.label}
-                </>
-              ) : (
-                'tap a card to read its title'
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </>
-  );
-}
 
 /* ─── Custom context menu ─── */
 
@@ -2789,6 +2320,7 @@ function RiverCtxMenu({
   x,
   y,
   shape,
+  onNewStream,
   onNewConversation,
   onBranch,
   onCopy,
@@ -2797,6 +2329,7 @@ function RiverCtxMenu({
   x: number;
   y: number;
   shape: CardShape | null;
+  onNewStream: () => void;
   onNewConversation: () => void;
   onBranch: () => void;
   onCopy: () => void;
@@ -2830,12 +2363,25 @@ function RiverCtxMenu({
         style={CTX_ITEM}
         onMouseEnter={(e) => { (e.currentTarget.style.background = '#f3f2ee'); }}
         onMouseLeave={(e) => { (e.currentTarget.style.background = 'none'); }}
-        onClick={onNewConversation}
+        onClick={onNewStream}
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
           <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
         </svg>
-        New conversation
+        New stream here
+      </button>
+
+      <button
+        type="button"
+        style={CTX_ITEM}
+        onMouseEnter={(e) => { (e.currentTarget.style.background = '#f3f2ee'); }}
+        onMouseLeave={(e) => { (e.currentTarget.style.background = 'none'); }}
+        onClick={onNewConversation}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <path d="M3 7h7v7H3zM14 10h7v7h-7z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        New canvas
       </button>
 
       {shape && (
@@ -2904,7 +2450,7 @@ function RiverCtxMenu({
   );
 }
 
-const CARD_GAP_Y = 40;
+const CARD_GAP_Y = 64;
 const CARD_GAP_X = 80;
 const COLUMN_WIDTH = CARD_WIDTH + CARD_GAP_X;
 
@@ -2929,8 +2475,11 @@ function relayoutAll(editor: Editor): void {
       hasParent.add(t.id);
     }
   }
-  const root = turnIds.find((id) => !hasParent.has(id));
-  if (!root) return;
+  // All roots — multiple are allowed (each represents an independent stream
+  // on the same canvas). Each root anchors its own subtree wherever the user
+  // placed it; the layout only flows children below the existing root.
+  const roots = turnIds.filter((id) => !hasParent.has(id));
+  if (roots.length === 0) return;
 
   // Post-order: column count per subtree.
   const cols = new Map<TurnId, number>();
@@ -2945,15 +2494,12 @@ function relayoutAll(editor: Editor): void {
     cols.set(id, total);
     return total;
   }
-  computeCols(root);
+  for (const r of roots) computeCols(r);
 
-  // Pre-order: assign x,y. Anchor at (0,0) — simple, predictable.
-  const originX = 0;
-  const originY = 0;
-  function assign(id: TurnId, colOffset: number, y: number): void {
+  function assign(id: TurnId, anchorX: number, y: number, colOffset: number): void {
     const shape = editor.getShape(id) as unknown as CardShape | undefined;
     if (!shape) return;
-    const x = originX + colOffset * COLUMN_WIDTH;
+    const x = anchorX + colOffset * COLUMN_WIDTH;
     if (Math.abs(shape.x - x) >= 1 || Math.abs(shape.y - y) >= 1) {
       editor.updateShape({ id, type: 'card', x, y });
     }
@@ -2961,11 +2507,20 @@ function relayoutAll(editor: Editor): void {
     const kids = children.get(id) ?? [];
     let offset = 0;
     for (const c of kids) {
-      assign(c, colOffset + offset, bottom + CARD_GAP_Y);
+      assign(c, anchorX, bottom + CARD_GAP_Y, colOffset + offset);
       offset += cols.get(c) ?? 1;
     }
   }
-  assign(root, 0, originY);
+  for (const root of roots) {
+    const rootShape = editor.getShape(root) as unknown as CardShape | undefined;
+    // Anchor each tree at its root's current position. The first root falls
+    // back to (0,0); subsequent roots default to the right of the previous
+    // tree if they haven't been placed yet (shouldn't happen — startNewStream
+    // pre-positions them — but keeps the layout sane if it does).
+    const anchorX = rootShape?.x ?? 0;
+    const y = rootShape?.y ?? 0;
+    assign(root, anchorX, y, 0);
+  }
 }
 
 /**
